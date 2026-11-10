@@ -208,7 +208,11 @@ public class CardFaceSymbols {
      *            a int.
      */
     public static void drawSymbol(final String imageName, final Graphics g, final int x, final int y) {
-        FSkin.drawImage(g, MANA_IMAGES.get(imageName), x, y);
+        final FSkin.SkinImage image = MANA_IMAGES.get(imageName);
+        if (image == null) {
+            return; // a symbol Forge has no picture for (custom cards): drawn as nothing, not a crash
+        }
+        FSkin.drawImage(g, image, x, y);
     }
     public static void drawManaSymbol(final String imageName, final Graphics g, final int x, final int y) {
         drawSymbol(imageName, g, x, y, manaImageSize);
@@ -218,7 +222,11 @@ public class CardFaceSymbols {
         float screenScale = GuiBase.getInterface().getScreenScale();
         int imageSize = Math.round(size * screenScale);
 
-        FSkin.drawImage(g, MANA_IMAGES.get(imageName).resize(imageSize, imageSize),
+        final FSkin.SkinImage image = MANA_IMAGES.get(imageName);
+        if (image == null) {
+            return; // a symbol Forge has no picture for (custom cards): drawn as nothing, not a crash
+        }
+        FSkin.drawImage(g, image.resize(imageSize, imageSize),
             x, y, x + size, y + size, 0, 0, imageSize, imageSize);
     }
     public static void drawWatermark(final FSkinProp skinProp, final Graphics g, final int x, final int y, final int size) {
