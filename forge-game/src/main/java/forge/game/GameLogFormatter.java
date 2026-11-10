@@ -201,8 +201,10 @@ public class GameLogFormatter extends IGameEventVisitor.Base<GameLogEntry> {
 
     @Override
     public GameLogEntry visit(GameEventPlayerPoisoned ev) {
+        // counters removed by a rule (no source card) used to throw here and lose the log line
+        Object source = ev.source() != null ? ev.source() : localizer.getMessage("lblGame");
         String message = localizer.getMessage("lblLogPlayerReceivesNPosionCounterFrom",
-                            ev.receiver(), ev.amount(), ev.source());
+                            ev.receiver(), ev.amount(), source);
         return new GameLogEntry(GameLogEntryType.DAMAGE, message);
     }
 
