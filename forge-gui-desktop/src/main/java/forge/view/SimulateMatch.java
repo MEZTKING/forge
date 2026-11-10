@@ -150,10 +150,16 @@ public class SimulateMatch {
 
                 RegisteredPlayer rp;
 
-                if (type.equals(GameType.Commander)) {
+                // every format led by a commander (Brawl, Oathbreaker…) puts it in the command zone
+                if (type.equals(GameType.Commander) || type.equals(GameType.Brawl)
+                        || type.equals(GameType.Oathbreaker) || type.equals(GameType.TinyLeaders)) {
                     rp = RegisteredPlayer.forCommander(d);
                 } else {
                     rp = new RegisteredPlayer(d);
+                }
+                // -L <life>: every player's starting life (a format's own, e.g. Brawl 25, a house rule)
+                if (params.containsKey("L")) {
+                    rp.setStartingLife(Integer.parseInt(params.get("L").get(0)));
                 }
                 rp.setPlayer(GamePlayerUtil.createAiPlayer(name, i - 1, profile));
                 pp.add(rp);
@@ -191,7 +197,7 @@ public class SimulateMatch {
     }
 
     private static void argumentHelp() {
-        System.out.println("Syntax: forge.exe sim -d <deck1[.dck]> ... <deckX[.dck]> -D [D] -n [N] -m [M] -t [T] -p [P] -f [F] -s [S] -a [A] -q");
+        System.out.println("Syntax: forge.exe sim -d <deck1[.dck]> ... <deckX[.dck]> -D [D] -n [N] -m [M] -t [T] -p [P] -f [F] -s [S] -a [A] -L [life] -q");
         System.out.println("\tsim - stands for simulation mode");
         System.out.println("\tdeck1 (or deck2,...,X) - constructed deck name or filename (has to be quoted when contains multiple words)");
         System.out.println("\tdeck is treated as file if it ends with a dot followed by three numbers or letters");
