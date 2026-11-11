@@ -13,6 +13,7 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
+import forge.card.CardStateName;
 import forge.card.mana.ManaAtom;
 import forge.game.GameEntityView;
 import forge.game.GameView;
@@ -204,6 +205,12 @@ public final class JsonView {
         return showAll || viewer == null || c.canBeShownTo(viewer);
     }
 
+    /** Whether the viewer may know what a face-down card is (always, for a card that isn't face down). */
+    public boolean mayKnowFace(final CardView c) {
+        return !c.isFaceDown() || showAll || viewer == null || c.canFaceDownBeShownTo(viewer)
+                || c.getZone() == null && viewer.equals(c.getController());     // a copy of your own, in no zone
+    }
+
     /** One card. Never throws: a card that can't be read comes with "error". */
     public JsonObject card(final CardView c) {
         final JsonObject o = new JsonObject();
@@ -214,11 +221,14 @@ public final class JsonView {
             o.add("owner", id(c.getOwner()));
             o.add("controller", id(c.getController()));
             o.addProperty("face_down", c.isFaceDown());
-            if (!maySee(c)) {
+            final CardStateView s = c.getCurrentState();
+            // A face-down card whose view still shows its face – on its way to the stack while it's cast
+            // face down, or a copy of it in no zone (Forge's last-known information) – is hidden from
+            // whoever may not know what it is: a `cards` message sent then named another player's morph
+            if (!maySee(c) || c.isFaceDown() && s != null && s.getState() != CardStateName.FaceDown && !mayKnowFace(c)) {
                 o.addProperty("hidden", true);
                 return o;
             }
-            final CardStateView s = c.getCurrentState();
             o.addProperty("name", s.getName());
             o.addProperty("set", s.getSetCode());
             o.addProperty("image_key", s.getImageKey());
@@ -258,7 +268,10 @@ public final class JsonView {
                     o.addProperty("phased_out", true);
                 }
             }
-            if (c.hasAlternateState()) {       // double-faced, flip, split…: its other face
+            // double-faced, flip, split…: its other face. A face-down card's other face is the card itself:
+            // only for those who may look at it (its controller on the battlefield or the stack, a card
+            // they may look at in exile) – everybody else sees a face-down 2/2 and nothing more
+            if (c.hasAlternateState() && mayKnowFace(c)) {
                 final CardStateView alt = c.getAlternateState();
                 o.addProperty("other_face", alt.getName());
                 o.addProperty("face", String.valueOf(s.getState()));

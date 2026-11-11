@@ -598,8 +598,8 @@ public class JsonGuiGame extends AbstractGuiGame {
         if (!dev.pausesBeforeAi() || !interactive || sa.getHostCard() == null) {
             return false;
         }
-        final JsonObject o = question(sa.getActivatingPlayer() + " is about to " + (sa.isSpell() ? "cast " : "use ")
-                + sa.getHostCard() + ".");
+        final JsonObject o = question(sa.getActivatingPlayer() + " is about to " + (sa.isCastFaceDown()
+                ? "cast a card face down." : (sa.isSpell() ? "cast " : "use ") + sa.getHostCard() + "."));
         o.addProperty("title", "Paused");
         o.addProperty("pause", true);
         o.addProperty("card", sa.getHostCard().getId());
@@ -1095,9 +1095,10 @@ public class JsonGuiGame extends AbstractGuiGame {
         }
         try {
             final Input in = h.getInputQueue().getInput();
-            if (in instanceof InputPassPriority again && dev.takeRecheck()) {
+            if (in instanceof InputPassPriority again && (dev.takeRecheck() || dev.hasWaiting())) {
                 // the testing tools changed the game just before this prompt: Forge is asked to look at
-                // the game again (state-based actions, triggers) and then asks afresh
+                // the game again (state-based actions, triggers) and then asks afresh. Also when a testing
+                // action came while this prompt was on its way: it is done now, not after the next click
                 again.restartPrompt();
                 return;
             }

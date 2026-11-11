@@ -106,7 +106,9 @@ public final class BridgeAi extends LobbyPlayerAi {
                     say(player, player + " plays the land " + host + ".");
                     continue;
                 }
-                say(player, player + " chose to " + (sa.isSpell() ? "cast " : "use ") + host + ": " + sa);
+                // a spell cast face down (morph, disguise…) is a face-down card to the other players too
+                say(player, sa.isCastFaceDown() ? player + " chose to cast a card face down."
+                        : player + " chose to " + (sa.isSpell() ? "cast " : "use ") + host + ": " + sa);
                 final Predicate<SpellAbility> p = pause;
                 if (p != null) {
                     p.test(sa);

@@ -157,6 +157,20 @@ final class DevTools {
         return false;
     }
 
+    /**
+     * Whether a testing action waits to be done at the next rest (one without `at`): one that came
+     * while a priority prompt was being asked again – after Forge's last rest, before the new prompt
+     * showed – would otherwise wait for the person's next click.
+     */
+    boolean hasWaiting() {
+        for (final JsonObject m : queue) {
+            if (!m.has("at")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     boolean pausesBeforeAi() {
         return pauseBeforeAi;
     }
