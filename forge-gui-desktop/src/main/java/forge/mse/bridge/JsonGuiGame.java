@@ -2,15 +2,18 @@ package forge.mse.bridge;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Observable;
 import java.util.Observer;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.eventbus.Subscribe;
@@ -28,7 +31,9 @@ import forge.game.GameLog;
 import forge.game.GameLogEntry;
 import forge.game.GameOutcome;
 import forge.game.GameView;
+import forge.game.GameEntity;
 import forge.game.card.CardView;
+import forge.game.combat.Combat;
 import forge.game.event.GameEvent;
 import forge.game.event.GameEventAttackersDeclared;
 import forge.game.event.GameEventBlockersDeclared;
@@ -59,14 +64,30 @@ import forge.game.spellability.SpellAbilityView;
 import forge.game.spellability.StackItemView;
 import forge.gamemodes.match.AbstractGuiGame;
 import forge.gamemodes.match.Selection;
+import forge.gamemodes.match.input.Input;
+import forge.gamemodes.match.input.InputAttack;
+import forge.gamemodes.match.input.InputBlock;
+import forge.gamemodes.match.input.InputChooseStartingHand;
+import forge.gamemodes.match.input.InputConfirm;
+import forge.gamemodes.match.input.InputConfirmMulligan;
+import forge.gamemodes.match.input.InputLondonMulligan;
+import forge.gamemodes.match.input.InputPassPriority;
+import forge.gamemodes.match.input.InputPayMana;
+import forge.gamemodes.match.input.InputSelectManyBase;
+import forge.gamemodes.match.input.InputSelectStackItems;
+import forge.gamemodes.match.input.InputSelectTargets;
 import forge.gui.control.PlaybackSpeed;
 import forge.interfaces.IGameController;
 import forge.item.PaperCard;
+import forge.localinstance.properties.ForgePreferences.FPref;
 import forge.localinstance.skin.FSkinProp;
+import forge.model.FModel;
+import forge.player.PlayerControllerHuman;
 import forge.trackable.TrackableCollection;
 import forge.trackable.TrackableObject;
 import forge.util.FSerializableFunction;
 import forge.util.ITriggerEvent;
+import forge.util.Localizer;
 
 /**
  * Forge's game window, as messages: the {@link forge.gui.interfaces.IGuiGame} Forge talks to
@@ -86,11 +107,18 @@ import forge.util.ITriggerEvent;
  * which waits for the return value. All of them go through {@link #ask}.</li>
  * </ul>
  *
- * In M0 nobody plays through this window (it watches a game between AI players), so
- * {@link #interactive} is false and every question is sent as a `prompt` and answered at once
- * with its default. A human seat (M2) sets it true: {@link #ask} then waits for the table's
- * `answer`, and {@link #awaitInput} sends a fresh `state` before the game thread waits for a
- * click.
+ * Watching a game between AI players, {@link #interactive} is false: every question is sent as
+ * a `prompt` and answered at once with its default. With a person at the table (BridgeMain
+ * --human) it is true, and there are two kinds of `prompt` that wait:
+ * <ul>
+ * <li><b>reply "click"</b> – one of Forge's Input* classes is waiting (priority, paying mana,
+ * targets, attackers, blockers, picking cards, a yes / no, the mulligan). The table answers with
+ * `ok`, `cancel`, `card`, `player`, `stack`, `mana`. These prompts are put together on Swing's
+ * thread by {@link #flushPrompt} from what Forge told the window (the message, the buttons, the
+ * selection, the cards worth clicking) once the Input has shown itself.</li>
+ * <li><b>reply "answer"</b> – a dialog ({@link #ask}: choose from a list, order, a number,
+ * combat damage…). The thread that asked waits for the table's `answer`.</li>
+ * </ul>
  */
 public class JsonGuiGame extends AbstractGuiGame {
     public static final int PROTOCOL = 1;
@@ -101,10 +129,15 @@ public class JsonGuiGame extends AbstractGuiGame {
     private volatile boolean interactive = false;
 
     private volatile Game game;
+    private volatile PlayerControllerHuman human;       // the person's seat (null while only watching)
+    private volatile Runnable onGameOver = () -> { };
+    private volatile boolean autoPay = false;
+    private volatile Set<PhaseType> stopsMine = null;   // null: Forge's own settings
+    private volatile Set<PhaseType> stopsTheirs = null;
     private JsonView view = new JsonView(null);
     private int logSent = 0;
     private String lastState = "";
-    private boolean dirty = true;
+    private volatile boolean dirty = true;
     private boolean speedSet = false;
     private volatile boolean resync = false;
     private volatile boolean gameOverSent = false;
@@ -119,6 +152,33 @@ public class JsonGuiGame extends AbstractGuiGame {
     private JsonElement promptCard = JsonNull.INSTANCE;
     private JsonObject promptButtons = buttons("OK", "Cancel", false, false, true);
     private JsonObject promptSelection = null;
+    // a person plays: which Input the message and the buttons were shown for, and what was last sent
+    private Input messageFor = null;
+    private Input buttonsFor = null;
+    private boolean okEnabled = false;
+    private String okLabel = "";
+    private Input shownInput = null;
+    private boolean shownOnce = false;
+    private int promptRev = 0;
+    private String lastPrompt = "";
+    private int autoPresses = 0;
+    private List<CardView> weak = List.of();
+    private List<CardView> revealed = List.of();
+    private int clicks = 0;                     // the table's clicks handled so far (Swing's thread)
+    private volatile boolean resend = false;
+    private final AtomicInteger settling = new AtomicInteger();
+    private final AtomicBoolean flushQueued = new AtomicBoolean();
+    private final Map<Integer, AbilityChoice> abilityPrompts = new ConcurrentHashMap<>();
+    private final Map<Input, Integer> inputIds = new java.util.WeakHashMap<>();     // under promptLock
+    // game threads that are waiting for the table (a click or an answer), each with "still waiting?"
+    private final Map<Thread, java.util.function.BooleanSupplier> waiters = new ConcurrentHashMap<>();
+    private final AtomicBoolean recheckQueued = new AtomicBoolean();
+    private Input unshown = null;
+    private int unshownTries = 0;
+    private static final java.util.concurrent.ThreadPoolExecutor GAME_THREADS = gameThreads();
+    private final Map<Input, Integer> inputRevs = new java.util.WeakHashMap<>();
+
+    private record AbilityChoice(int card, int count) { }
 
     public JsonGuiGame(final BridgeWire wire0, final long seed0, final PlaybackSpeed speed) {
         wire = wire0;
@@ -133,8 +193,80 @@ public class JsonGuiGame extends AbstractGuiGame {
         interactive = interactive0;
     }
 
+    public boolean isInteractive() {
+        return interactive;
+    }
+
     public boolean isGameOverSent() {
         return gameOverSent;
+    }
+
+    /** Run once `game_over` has been sent (a person's game: nobody clicks Forge's own "quit"). */
+    public void setOnGameOver(final Runnable r) {
+        onGameOver = r == null ? () -> { } : r;
+    }
+
+    /** Auto-pay: when a cost can be paid with Forge's "Auto" button, the bridge presses it itself. */
+    public void setAutoPay(final boolean on) {
+        autoPay = on;
+    }
+
+    /**
+     * The phases at which the person is asked what to do while nothing is on the stack: on their
+     * own turn and on the others' turns. null = Forge's own settings (PHASE_HUMAN_*, PHASE_AI_*).
+     */
+    public void setStops(final Set<PhaseType> mine, final Set<PhaseType> theirs) {
+        stopsMine = mine == null ? null : Collections.unmodifiableSet(EnumSet.copyOf(withNone(mine)));
+        stopsTheirs = theirs == null ? null : Collections.unmodifiableSet(EnumSet.copyOf(withNone(theirs)));
+    }
+
+    private static Set<PhaseType> withNone(final Set<PhaseType> set) {
+        return set.isEmpty() ? EnumSet.noneOf(PhaseType.class) : set;
+    }
+
+    // the phases Forge's own window has a stop for, in the order of FPref.PHASES_HUMAN / PHASES_AI
+    private static final PhaseType[] STOP_PHASES = { PhaseType.UPKEEP, PhaseType.DRAW, PhaseType.MAIN1,
+            PhaseType.COMBAT_BEGIN, PhaseType.COMBAT_DECLARE_ATTACKERS, PhaseType.COMBAT_DECLARE_BLOCKERS,
+            PhaseType.COMBAT_FIRST_STRIKE_DAMAGE, PhaseType.COMBAT_DAMAGE, PhaseType.COMBAT_END, PhaseType.MAIN2,
+            PhaseType.END_OF_TURN, PhaseType.CLEANUP };
+
+    private static Set<PhaseType> stopsFromPrefs(final FPref[] prefs) {
+        final Set<PhaseType> set = EnumSet.noneOf(PhaseType.class);
+        for (int i = 0; i < STOP_PHASES.length && i < prefs.length; i++) {
+            if (FModel.getPreferences().getPrefBoolean(prefs[i])) {
+                set.add(STOP_PHASES[i]);
+            }
+        }
+        return set;
+    }
+
+    private Set<PhaseType> stops(final boolean mine) {
+        final Set<PhaseType> set = mine ? stopsMine : stopsTheirs;
+        return set != null ? set : stopsFromPrefs(mine ? FPref.PHASES_HUMAN : FPref.PHASES_AI);
+    }
+
+    private static JsonArray names(final Set<PhaseType> phases) {
+        final JsonArray a = new JsonArray();
+        for (final PhaseType p : phases) {
+            a.add(p.name());
+        }
+        return a;
+    }
+
+    /** "MAIN1,MAIN2" → the phases (Forge's names; "all" and "none" too). Unknown names are an error. */
+    public static Set<PhaseType> parsePhases(final String text) {
+        final Set<PhaseType> set = EnumSet.noneOf(PhaseType.class);
+        final String t = text == null ? "" : text.trim();
+        if (t.equalsIgnoreCase("all")) {
+            Collections.addAll(set, STOP_PHASES);
+        } else if (!t.isEmpty() && !t.equalsIgnoreCase("none")) {
+            for (final String name : t.split("[,\\s]+")) {
+                if (!name.isEmpty()) {
+                    set.add(PhaseType.valueOf(name.toUpperCase()));
+                }
+            }
+        }
+        return set;
     }
 
     // ================================================================== the game, on the game thread
@@ -153,6 +285,12 @@ public class JsonGuiGame extends AbstractGuiGame {
         logSent = 0;
         lastState = "";
         gameOverSent = false;
+        human = null;
+        if (interactive && getGameController() instanceof PlayerControllerHuman h) {
+            human = h;
+            // told whenever an Input starts or ends waiting, on whichever thread does it
+            h.getInputQueue().addObserver((o, arg) -> inputChanged());
+        }
         g.subscribeToEvents(this);
         final GameLog log = g.getGameLog();
         log.addObserver(new LogObserver());
@@ -188,6 +326,13 @@ public class JsonGuiGame extends AbstractGuiGame {
             zones.add(z);
         }
         o.add("zones", zones);
+        if (interactive) {
+            final JsonObject stops = new JsonObject();
+            stops.add("mine", names(stops(true)));
+            stops.add("theirs", names(stops(false)));
+            o.add("stops", stops);
+            o.addProperty("auto_pay", autoPay);
+        }
         wire.send(o);
     }
 
@@ -230,8 +375,11 @@ public class JsonGuiGame extends AbstractGuiGame {
         }
     }
 
-    /** The whole game, if anything changed since the last one sent. Game thread only. */
-    private void sendState() {
+    /**
+     * The whole game, if anything changed since the last one sent. On the game thread – or, with a
+     * person playing, on Swing's thread while the game thread waits for their click.
+     */
+    private synchronized void sendState() {
         final GameView gv = getGameView();
         if (gv == null || !dirty && !resync) {
             return;
@@ -240,7 +388,12 @@ public class JsonGuiGame extends AbstractGuiGame {
             resync = false;
             lastState = "";
             sendHello();
-            showPrompt(false);
+            if (interactive) {
+                resend = true;
+                promptChanged();
+            } else {
+                showPrompt(false);
+            }
         }
         dirty = false;
         final JsonObject o = view.state(gv);
@@ -299,6 +452,8 @@ public class JsonGuiGame extends AbstractGuiGame {
         o.add("text", lines);
         wire.send(o);
         gameOverSent = true;
+        releaseQuestions();
+        onGameOver.run();
     }
 
     /** Forge's own game log: each new line as a `log` message (on the game thread, as it's written). */
@@ -346,13 +501,50 @@ public class JsonGuiGame extends AbstractGuiGame {
      */
     @Override
     public void awaitInput(final CountDownLatch done) throws InterruptedException {
-        dirty = true;
+        final Thread me = Thread.currentThread();
+        waiters.put(me, () -> done.getCount() > 0);     // from here on this thread changes nothing in the game
         try {
-            sendState();
-        } catch (final RuntimeException e) {
-            error("The bridge couldn't describe the game: " + e);
+            dirty = true;
+            try {
+                sendState();
+            } catch (final RuntimeException e) {
+                error("The bridge couldn't describe the game: " + e);
+            }
+            done.await();
+        } finally {
+            waiters.remove(me);
         }
-        done.await();
+    }
+
+    /** Forge's pool of game threads (private in ThreadUtil): how many of them are at work is all that's read. */
+    private static java.util.concurrent.ThreadPoolExecutor gameThreads() {
+        try {
+            final java.lang.reflect.Field f = forge.util.ThreadUtil.class.getDeclaredField("gameThreadPool");
+            f.setAccessible(true);
+            return f.get(null) instanceof java.util.concurrent.ThreadPoolExecutor pool ? pool : null;
+        } catch (final ReflectiveOperationException | RuntimeException e) {
+            System.err.println("MSE-BRIDGE can't see Forge's game threads (" + e + "): prompts won't say `busy`");
+            return null;
+        }
+    }
+
+    /**
+     * True while a game thread is at work rather than waiting for the table. Forge's Inputs take a
+     * click while the one before is still being carried out on another game thread (its own window
+     * relies on people being slower than that); a table should wait until this is false.
+     */
+    private boolean gameBusy() {
+        final java.util.concurrent.ThreadPoolExecutor pool = GAME_THREADS;
+        if (pool == null) {
+            return false;
+        }
+        int waiting = 0;
+        for (final Map.Entry<Thread, java.util.function.BooleanSupplier> e : waiters.entrySet()) {
+            if (e.getValue().getAsBoolean() && e.getKey().getName().startsWith("Game")) {
+                waiting++;
+            }
+        }
+        return pool.getActiveCount() > waiting;
     }
 
     // ================================================================== what the table sends
@@ -360,35 +552,56 @@ public class JsonGuiGame extends AbstractGuiGame {
     private void onMessage(final JsonObject m) {
         final String t = m.get("t").getAsString();
         switch (t) {
-            case "answer": {
-                final CompletableFuture<JsonElement> f = waiting.remove(m.get("prompt").getAsInt());
-                if (f == null) {
-                    error("No question is waiting for answer " + m.get("prompt"));
-                } else {
-                    f.complete(m.has("value") ? m.get("value") : JsonNull.INSTANCE);
-                }
+            case "answer":
+                answer(m);
                 break;
-            }
-            case "ok":          // watching: pause / resume
-                control(IGameController::selectButtonOk);
+            case "ok":          // the prompt's first button (watching: pause / resume)
+                click(m, IGameController::selectButtonOk);
                 break;
-            case "cancel":      // watching: the next speed, or one step while paused
-                control(IGameController::selectButtonCancel);
-                break;
-            case "concede":
-                control(IGameController::concede);
-                break;
-            case "undo":
-                control(IGameController::undoLastAction);
+            case "cancel":      // its second button (watching: the next speed, or one step while paused)
+                click(m, IGameController::selectButtonCancel);
                 break;
             case "card":
-                control(c -> c.selectCard(cardById(m.get("id").getAsInt()), null, null));
+                click(m, c -> {
+                    final int id = m.get("id").getAsInt();
+                    final CardView card = findCard(id);
+                    if (card == null) {
+                        refused("That card isn't there any more.", id, m);
+                    } else if (!c.selectCard(card, null, null)) {
+                        refused("That card can't be chosen now.", id, m);
+                    }
+                });
                 break;
             case "player":
-                control(c -> c.selectPlayer(playerById(m.get("id").getAsInt()), null));
+                click(m, c -> c.selectPlayer(playerById(m.get("id").getAsInt()), null));
+                break;
+            case "stack":
+                click(m, c -> c.selectStackItem(stackItemById(m.get("id").getAsInt())));
                 break;
             case "mana":
-                control(c -> c.useMana(forge.card.MagicColor.fromName(m.get("colour").getAsString())));
+                click(m, c -> c.useMana(colour(m.get("colour").getAsString())));
+                break;
+            case "ability":     // {card, index}: the same as answering the `ability` prompt of that card
+                ability(m);
+                break;
+            case "undo":
+                click(m, IGameController::undoLastAction);
+                break;
+            case "concede":
+                click(m, IGameController::concede);
+                break;
+            case "auto_pay":
+                autoPay = !m.has("on") || m.get("on").getAsBoolean();
+                resend = true;
+                promptChanged();
+                break;
+            case "stops":
+                try {
+                    setStops(m.has("mine") ? phases(m.get("mine")) : stopsMine,
+                            m.has("theirs") ? phases(m.get("theirs")) : stopsTheirs);
+                } catch (final RuntimeException e) {
+                    error("Those aren't phases: " + e.getMessage());
+                }
                 break;
             case "quit":
                 BridgeMain.finish(0);
@@ -398,36 +611,174 @@ public class JsonGuiGame extends AbstractGuiGame {
         }
     }
 
-    /** The player's actions go to Forge on the event thread, as its own window's clicks do. */
-    private void control(final java.util.function.Consumer<IGameController> action) {
+    private static Set<PhaseType> phases(final JsonElement e) {
+        if (e == null || e.isJsonNull()) {
+            return null;        // back to Forge's own
+        }
+        if (e.isJsonPrimitive()) {
+            return parsePhases(e.getAsString());
+        }
+        final Set<PhaseType> set = EnumSet.noneOf(PhaseType.class);
+        for (final JsonElement x : e.getAsJsonArray()) {
+            set.add(PhaseType.valueOf(x.getAsString().toUpperCase()));
+        }
+        return set;
+    }
+
+    private static byte colour(final String name) {
+        final String n = name.trim();
+        if (n.equalsIgnoreCase("C") || n.equalsIgnoreCase("colourless") || n.equalsIgnoreCase("colorless")) {
+            return (byte) forge.card.mana.ManaAtom.COLORLESS;
+        }
+        final byte b = forge.card.MagicColor.fromName(n);
+        if (b == 0) {
+            throw new IllegalArgumentException("no colour " + name);
+        }
+        return b;
+    }
+
+    /** `answer` {prompt, value}: for a question that waits – or, true / false, the buttons of the prompt showing. */
+    private void answer(final JsonObject m) {
+        final int id = m.get("prompt").getAsInt();
+        final JsonElement value = m.has("value") ? m.get("value") : JsonNull.INSTANCE;
+        final CompletableFuture<JsonElement> f = waiting.remove(id);
+        if (f != null) {
+            abilityPrompts.remove(id);
+            f.complete(value);
+        } else if (interactive && value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean()) {
+            click(m, value.getAsBoolean() ? IGameController::selectButtonOk : IGameController::selectButtonCancel);
+        } else {
+            error("No question is waiting for answer " + id);
+        }
+    }
+
+    private void ability(final JsonObject m) {
+        final int card = m.get("card").getAsInt();
+        for (final Map.Entry<Integer, AbilityChoice> e : abilityPrompts.entrySet()) {
+            if (e.getValue().card() == card) {
+                final CompletableFuture<JsonElement> f = waiting.remove(e.getKey());
+                abilityPrompts.remove(e.getKey());
+                if (f != null) {
+                    final JsonArray a = new JsonArray();
+                    if (m.has("index") && !m.get("index").isJsonNull()) {
+                        a.add(m.get("index").getAsInt());
+                    }
+                    f.complete(a);
+                    return;
+                }
+            }
+        }
+        error("No choice of abilities is waiting for card " + card);
+    }
+
+    /**
+     * The player's actions go to Forge on the event thread, as its own window's clicks do. A click
+     * that names a `prompt` which isn't the one waiting any more is dropped (log STALE). Every
+     * click is counted, and the prompt is sent again afterwards with that count (`clicks`), so a
+     * table knows which of its clicks a prompt already takes into account.
+     */
+    private void click(final JsonObject m, final java.util.function.Consumer<IGameController> action) {
         forge.gui.FThreads.invokeInEdtLater(() -> {
             final IGameController c = getGameController();
-            if (c == null) {
-                error("No game is running");
-                return;
-            }
             try {
-                action.accept(c);
+                if (c == null) {
+                    error("No game is running");
+                } else if (stale(m)) {
+                    final JsonObject o = msg("log");
+                    o.addProperty("kind", "STALE");
+                    o.addProperty("text", "That prompt isn't waiting any more.");
+                    o.add("prompt", m.get("prompt"));
+                    wire.send(o);
+                } else {
+                    action.accept(c);
+                }
             } catch (final RuntimeException e) {
                 error("Forge refused that: " + e);
+            } finally {
+                if (interactive) {
+                    synchronized (promptLock) {
+                        clicks++;
+                    }
+                    dirty = true;
+                    resend = true;
+                    inputChanged();     // two steps later: once what the click started has shown itself
+                }
             }
         });
     }
 
-    private CardView cardById(final int id) {
+    private boolean stale(final JsonObject m) {
+        final PlayerControllerHuman h = human;
+        if (h == null || !m.has("prompt") || m.get("prompt").isJsonNull() || "answer".equals(m.get("t").getAsString())) {
+            return false;
+        }
+        final int id = m.get("prompt").getAsInt();
+        synchronized (promptLock) {
+            return h.getInputQueue().getInput() != shownInput || id != inputPromptId;
+        }
+    }
+
+    private void refused(final String text, final Integer card, final JsonObject click) {
+        final JsonObject o = msg("log");
+        o.addProperty("kind", "REFUSED");
+        o.addProperty("text", text);
+        if (card != null) {
+            o.addProperty("card", card);
+        }
+        if (click.has("prompt")) {
+            o.add("prompt", click.get("prompt"));
+        }
+        wire.send(o);
+    }
+
+    private StackItemView stackItemById(final int id) {
+        final GameView gv = getGameView();
+        if (gv != null && gv.getStack() != null) {
+            for (final StackItemView s : gv.getStack()) {
+                if (s.getId() == id) {
+                    return s;
+                }
+            }
+        }
+        throw new IllegalArgumentException("nothing on the stack has id " + id);
+    }
+
+    private CardView findCard(final int id) {
         final GameView gv = getGameView();
         if (gv != null) {
             for (final PlayerView p : gv.getPlayers()) {
                 for (final forge.game.zone.ZoneType z : forge.game.zone.ZoneType.values()) {
-                    for (final CardView c : p.getCards(z)) {
-                        if (c.getId() == id) {
-                            return c;
+                    final Iterable<CardView> cards = p.getCards(z);
+                    if (cards != null) {
+                        for (final CardView c : cards) {
+                            if (c.getId() == id) {
+                                return c;
+                            }
                         }
                     }
                 }
             }
         }
-        throw new IllegalArgumentException("no card " + id);
+        return null;
+    }
+
+    /** The id of every card that is in a zone now. */
+    private Set<Integer> cardIds() {
+        final Set<Integer> ids = new java.util.HashSet<>();
+        final GameView gv = getGameView();
+        if (gv != null) {
+            for (final PlayerView p : gv.getPlayers()) {
+                for (final forge.game.zone.ZoneType z : forge.game.zone.ZoneType.values()) {
+                    final Iterable<CardView> cards = p.getCards(z);
+                    if (cards != null) {
+                        for (final CardView c : cards) {
+                            ids.add(c.getId());
+                        }
+                    }
+                }
+            }
+        }
+        return ids;
     }
 
     private PlayerView playerById(final int id) {
@@ -471,7 +822,7 @@ public class JsonGuiGame extends AbstractGuiGame {
         return b;
     }
 
-    /** The prompt between questions (kind `watch` while only watching, else `input`). */
+    /** Watching: the line under the table and its two buttons (kind `watch`), sent as Forge changes them. */
     private void showPrompt(final boolean isNew) {
         final JsonObject o = msg("prompt");
         synchronized (promptLock) {
@@ -479,7 +830,7 @@ public class JsonGuiGame extends AbstractGuiGame {
                 inputPromptId = promptIds.incrementAndGet();
             }
             o.addProperty("id", inputPromptId);
-            o.addProperty("kind", interactive ? "input" : "watch");
+            o.addProperty("kind", "watch");
             o.addProperty("wait", false);
             o.add("player", promptPlayer);
             o.addProperty("message", promptMessage);
@@ -492,29 +843,252 @@ public class JsonGuiGame extends AbstractGuiGame {
         wire.send(o);
     }
 
+    /** Forge changed what its prompt shows. Watching: sent at once. A person playing: gathered by flushPrompt. */
+    private void promptChanged() {
+        if (interactive && flushQueued.compareAndSet(false, true)) {
+            forge.gui.FThreads.invokeInEdtLater(this::flushPrompt);
+        }
+    }
+
+    /**
+     * An Input started or stopped waiting (any thread). Forge shows the new one in a task it has just
+     * put on Swing's queue, before or after this call – so the prompt is sent two steps later, when
+     * that task has certainly run.
+     */
+    private void inputChanged() {
+        settling.incrementAndGet();
+        forge.gui.FThreads.invokeInEdtLater(() -> forge.gui.FThreads.invokeInEdtLater(() -> {
+            settling.decrementAndGet();
+            flushPrompt();
+        }));
+    }
+
+    private Input currentInput() {
+        final PlayerControllerHuman h = human;
+        return h == null ? null : h.getInputQueue().getInput();
+    }
+
+    /** Forge's name for the Input (of the class it was made from, when it's a nameless one). */
+    private static String className(final Input in) {
+        Class<?> c = in.getClass();
+        while (c.getSimpleName().isEmpty() && c.getSuperclass() != null) {
+            c = c.getSuperclass();
+        }
+        return c.getSimpleName();
+    }
+
+    private static String kindOf(final Input in) {
+        if (in instanceof InputPassPriority) {
+            return "priority";
+        } else if (in instanceof InputPayMana) {
+            return "mana";
+        } else if (in instanceof InputSelectTargets || in instanceof InputSelectStackItems) {
+            return "targets";
+        } else if (in instanceof InputAttack) {
+            return "attack";
+        } else if (in instanceof InputBlock) {
+            return "block";
+        } else if (in instanceof InputConfirmMulligan || in instanceof InputLondonMulligan
+                || in instanceof InputChooseStartingHand) {
+            return "mulligan";
+        } else if (in instanceof InputConfirm) {
+            return "confirm";
+        } else if (in instanceof InputSelectManyBase) {
+            return "select";
+        }
+        return in == null ? "wait" : "input";
+    }
+
+    /**
+     * A person plays: the prompt that's showing, as one message. Swing's thread only. While an Input
+     * waits it is `wait: true, reply: "click"`; between Inputs (the game is working, or it's
+     * somebody else's move) it is kind `wait` with `wait: false`.
+     */
+    private void flushPrompt() {
+        flushQueued.set(false);
+        final PlayerControllerHuman h = human;
+        if (h == null || gameOverSent || settling.get() > 0) {
+            return;
+        }
+        try {
+            final Input in = h.getInputQueue().getInput();
+            final JsonObject o = msg("prompt");
+            boolean press = false;
+            boolean busy = false;
+            synchronized (promptLock) {
+                if (in != null && messageFor != in && buttonsFor != in) {
+                    // It hasn't shown itself yet: its message and buttons are on their way. Should they not
+                    // come (Forge's showMessage can fail while a game thread is still at work), it is asked again.
+                    if (unshown != in) {
+                        unshown = in;
+                        unshownTries = 0;
+                    }
+                    if (unshownTries < 3 && recheckQueued.compareAndSet(false, true)) {
+                        forge.gui.FThreads.delayInEDT(300, () -> {
+                            recheckQueued.set(false);
+                            final boolean still;
+                            synchronized (promptLock) {
+                                still = currentInput() == in && messageFor != in && buttonsFor != in;
+                                if (still) {
+                                    unshownTries++;
+                                }
+                            }
+                            if (still) {
+                                try {
+                                    in.showMessageInitial();
+                                } catch (final RuntimeException e) {
+                                    error("Forge couldn't show its prompt: " + e);
+                                }
+                            }
+                            flushPrompt();
+                        });
+                    }
+                    return;
+                }
+                if (in != shownInput || !shownOnce) {
+                    shownInput = in;
+                    shownOnce = true;
+                    // between Inputs it is always prompt 0: how often that one is sent depends on timing,
+                    // and the ids of the prompts that wait shouldn't
+                    // An Input keeps its id when another one (paying for a mana ability, say) was on top of it for a while.
+                    inputPromptId = in == null ? 0 : inputIds.computeIfAbsent(in, x -> promptIds.incrementAndGet());
+                    promptRev = in == null ? 0 : inputRevs.getOrDefault(in, 0);
+                    autoPresses = 0;
+                }
+                final String kind = kindOf(in);
+                busy = in != null && (gameBusy() || in instanceof InputPayMana pay && pay.isActivatingManaAbility());
+                final boolean ok = buttonsFor == in && okEnabled;
+                press = autoPay && in instanceof InputPayMana && !busy && ok && autoPresses < 5
+                        && okLabel.equals(Localizer.getInstance().getMessage("lblAuto"));
+                o.addProperty("id", inputPromptId);
+                o.addProperty("kind", kind);
+                o.addProperty("wait", in != null && !busy && !press);
+                o.addProperty("reply", "click");
+                o.addProperty("input", in == null ? null : className(in));
+                o.add("player", in == null ? JsonView.id(getCurrentPlayer()) : JsonView.id(in.getOwner()));
+                o.addProperty("message", messageFor == in ? promptMessage : "");
+                o.add("card", messageFor == in ? promptCard : JsonNull.INSTANCE);
+                o.add("buttons", buttonsFor == in ? promptButtons : buttons("", "", false, false, true));
+                o.add("selection", promptSelection != null ? promptSelection : selection(Selection.NONE));
+                // the cards worth a click: what can be played, tapped for mana, attack or block – and,
+                // while paying, the ones Forge's Auto button would tap
+                final JsonArray playable = new JsonArray();
+                final JsonArray auto = new JsonArray();
+                final Set<Integer> seen = new java.util.HashSet<>();
+                final Set<Integer> there = weak.isEmpty() ? Set.of() : cardIds();
+                for (final CardView c : weak) {
+                    if (!there.contains(c.getId())) {
+                        continue;       // gone since Forge worked out its plan (a token that was sacrificed for mana)
+                    }
+                    if (seen.add(c.getId())) {
+                        playable.add(c.getId());
+                    } else if (!auto.contains(new JsonPrimitive(c.getId()))) {
+                        auto.add(c.getId());
+                    }
+                }
+                if (in instanceof InputLondonMulligan && human.getPlayer() != null) {
+                    for (final CardView c : human.getPlayer().getView().getHand()) {
+                        playable.add(c.getId());
+                    }
+                }
+                o.add("playable", playable);
+                o.addProperty("busy", busy);
+                if (in instanceof InputPayMana) {
+                    o.add("auto", auto);
+                    if (press) {
+                        o.addProperty("auto_paying", true);
+                    }
+                }
+                if (in instanceof InputAttack) {
+                    o.add("defenders", defenders());
+                }
+                if (!revealed.isEmpty()) {
+                    o.add("revealed", view.cards(revealed));
+                }
+                if (busy && recheckQueued.compareAndSet(false, true)) {
+                    // look again shortly: the prompt waits for the table once the game has caught up
+                    forge.gui.FThreads.delayInEDT(15, () -> {
+                        recheckQueued.set(false);
+                        flushPrompt();
+                    });
+                }
+                final String text = BridgeWire.toJson(o);
+                if (text.equals(lastPrompt) && !(resend && !busy)) {
+                    return;
+                }
+                lastPrompt = text;
+                if (!busy) {
+                    resend = false;
+                }
+                o.addProperty("clicks", clicks);
+                o.addProperty("rev", ++promptRev);
+                if (in != null) {
+                    inputRevs.put(in, promptRev);
+                }
+                if (press) {
+                    autoPresses++;
+                }
+            }
+            if (in != null && !busy) {      // the game thread is waiting for this click: the table gets the game as it is
+                dirty = true;
+                sendState();
+            }
+            wire.send(o);
+            if (press) {
+                h.selectButtonOk();
+            }
+        } catch (final RuntimeException e) {
+            error("The bridge couldn't describe the prompt: " + e);
+        }
+    }
+
+    /** Who or what can be attacked (players, planeswalkers, battles) while attackers are declared. */
+    private JsonArray defenders() {
+        final JsonArray a = new JsonArray();
+        final Game g = game;
+        final Combat combat = g == null ? null : g.getCombat();
+        if (combat != null) {
+            for (final GameEntity e : combat.getDefenders()) {
+                a.add(JsonView.entity(GameEntityView.get(e)));
+            }
+        }
+        return a;
+    }
+
     @Override
     public void showPromptMessage(final PlayerView playerView, final String message, final CardView card) {
+        final Input in = interactive ? currentInput() : null;
         synchronized (promptLock) {
             promptPlayer = JsonView.id(playerView);
             promptMessage = message == null ? "" : message;
             promptCard = JsonView.id(card);
+            messageFor = in;
         }
-        showPrompt(true);
+        if (interactive) {
+            promptChanged();
+        } else {
+            showPrompt(true);
+        }
     }
 
     @Override
     public void updateButtons(final PlayerView owner, final String label1, final String label2, final boolean enable1,
             final boolean enable2, final boolean focus1) {
+        final Input in = interactive ? currentInput() : null;
         synchronized (promptLock) {
             promptButtons = buttons(label1, label2, enable1, enable2, focus1);
+            buttonsFor = in;
+            okEnabled = enable1;
+            okLabel = label1 == null ? "" : label1;
         }
-        showPrompt(false);
+        if (interactive) {
+            promptChanged();
+        } else {
+            showPrompt(false);
+        }
     }
 
-    /** What the player may click for the prompt that's showing (targets, attackers, cards to pay with…). */
-    @Override
-    public void setSelection(final Selection next) {
-        super.setSelection(next);
+    private static JsonObject selection(final Selection next) {
         final JsonObject s = new JsonObject();
         s.add("cards", JsonView.ids(next.cards()));
         s.addProperty("min", next.min());
@@ -529,12 +1103,68 @@ public class JsonGuiGame extends AbstractGuiGame {
             chosen.add(thing(t));
         }
         s.add("chosen", chosen);
+        return s;
+    }
+
+    /** What the player may click for the prompt that's showing (targets, attackers, cards to pay with…). */
+    @Override
+    public void setSelection(final Selection next) {
+        super.setSelection(next);
+        final JsonObject s = selection(next);
         synchronized (promptLock) {
             promptSelection = next == Selection.NONE ? null : s;
         }
-        if (interactive) {
-            showPrompt(false);
+        promptChanged();
+    }
+
+    /** The cards worth a click now (Forge's own window gives them a glow). */
+    @Override
+    public void setWeaklySelectable(final Iterable<CardView> cards) {
+        super.setWeaklySelectable(cards);
+        final List<CardView> list = new ArrayList<>();
+        for (final CardView c : cards) {
+            list.add(c);
         }
+        synchronized (promptLock) {
+            weak = list;
+        }
+        promptChanged();
+    }
+
+    @Override
+    public void clearWeaklySelectable() {
+        super.clearWeaklySelectable();
+        synchronized (promptLock) {
+            weak = List.of();
+        }
+        promptChanged();
+    }
+
+    /** Cards shown to the player for the prompt that's waiting (`revealed` in it). */
+    @Override
+    public void showRevealedCards(final Iterable<CardView> cards) {
+        final List<CardView> list = new ArrayList<>();
+        for (final CardView c : cards) {
+            list.add(c);
+        }
+        synchronized (promptLock) {
+            revealed = list;
+        }
+        promptChanged();
+    }
+
+    @Override
+    public void hideRevealedCards() {
+        synchronized (promptLock) {
+            revealed = List.of();
+        }
+        promptChanged();
+    }
+
+    /** Things on the stack can be clicked as targets (`stack` {id}) rather than chosen from a list. */
+    @Override
+    public boolean canPickStackTargets() {
+        return interactive;
     }
 
     /** {card: id}, {player: id} or {stack: id}, with its name. */
@@ -562,29 +1192,39 @@ public class JsonGuiGame extends AbstractGuiGame {
         body.addProperty("t", "prompt");
         body.addProperty("id", id);
         body.addProperty("kind", kind);
-        body.addProperty("wait", interactive);
+        body.addProperty("wait", interactive && !gameOverSent);
+        body.addProperty("reply", "answer");
         body.add("default", fallback);
-        if (!interactive) {
+        if (!interactive || gameOverSent) {
             wire.send(body);
             return fallback;
         }
-        if (!forge.gui.FThreads.isGuiThread()) {     // the game thread: show the table the game as it is now
+        final CompletableFuture<JsonElement> answer = new CompletableFuture<>();
+        final Thread me = Thread.currentThread();
+        waiters.put(me, () -> !answer.isDone());
+        try {       // whichever thread asks waits for the answer: show the table the game as it is now
             dirty = true;
             sendState();
+        } catch (final RuntimeException e) {
+            error("The bridge couldn't describe the game: " + e);
         }
-        final CompletableFuture<JsonElement> answer = new CompletableFuture<>();
         waiting.put(id, answer);
+        if ("ability".equals(kind) && body.has("card") && body.get("card").isJsonPrimitive()) {
+            abilityPrompts.put(id, new AbilityChoice(body.get("card").getAsInt(), body.getAsJsonArray("options").size()));
+        }
         wire.send(body);
         try {
             final JsonElement value = answer.get();
-            return value == null ? fallback : value;
+            return value == null || value.isJsonNull() && !fallback.isJsonNull() ? fallback : value;
         } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             return fallback;
         } catch (final ExecutionException e) {
             return fallback;
         } finally {
+            waiters.remove(me);
             waiting.remove(id);
+            abilityPrompts.remove(id);
         }
     }
 
@@ -697,11 +1337,59 @@ public class JsonGuiGame extends AbstractGuiGame {
             return new ArrayList<>();
         }
         final JsonObject o = question(message);
+        if (min < 0 && max < 0) {       // nothing to choose: Forge only shows these (AbstractGuiGame.reveal)
+            o.add("options", options(choices, display));
+            ask("reveal", o, new JsonArray());
+            return new ArrayList<>();
+        }
         o.addProperty("min", min);
         o.addProperty("max", max);
         o.add("options", options(choices, display));
+        if (selected != null && !selected.isEmpty()) {
+            final JsonArray chosen = new JsonArray();
+            for (final T x : selected) {
+                if (choices.contains(x)) {
+                    chosen.add(choices.indexOf(x));
+                }
+            }
+            o.add("selected", chosen);
+        }
         final int n = Math.max(0, Math.min(min, choices.size()));
-        return pick(choices, ask("choose", o, indexes(0, n)));
+        final List<T> got = pick(choices, ask("choose", o, indexes(0, n)));
+        if (got.size() < n || max >= 0 && got.size() > max) {       // not an answer Forge could take
+            return pick(choices, indexes(0, n));
+        }
+        return got;
+    }
+
+    @Override
+    public Integer getInteger(final String message, final int min, final int max, final boolean sortDesc) {
+        return number(message, min, max);
+    }
+
+    @Override
+    public Integer getInteger(final String message, final int min, final int max, final int cutoff) {
+        return number(message, min, max);
+    }
+
+    /** A number from min to max (kind `number`); null = the player didn't want to say. */
+    private Integer number(final String message, final int min, final int max) {
+        if (max <= min) {
+            return min;
+        }
+        final JsonObject o = question(message);
+        o.addProperty("min", min);
+        if (max != Integer.MAX_VALUE) {
+            o.addProperty("max", max);
+        } else {
+            o.add("max", JsonNull.INSTANCE);
+        }
+        final JsonElement v = ask("number", o, new JsonPrimitive(min));
+        try {
+            return v.isJsonNull() ? null : Math.max(min, Math.min(max, v.getAsInt()));
+        } catch (final RuntimeException e) {
+            return min;
+        }
     }
 
     @Override
@@ -719,9 +1407,14 @@ public class JsonGuiGame extends AbstractGuiGame {
         return new OrderResult<>(pick(sourceChoices, ask("order", o, indexes(0, take))), false);
     }
 
+    /** Not asked (one game a match: nothing to swap between games): the deck stays as it is. */
     @Override
     public List<PaperCard> sideboard(final CardPool sideboard, final CardPool main, final String message) {
-        return null;        // one game a match: nothing to swap
+        final JsonObject o = question(message);
+        o.addProperty("main", main == null ? 0 : main.countAll());
+        o.addProperty("sideboard", sideboard == null ? 0 : sideboard.countAll());
+        tell("sideboard", o);
+        return null;
     }
 
     @Override
@@ -780,48 +1473,182 @@ public class JsonGuiGame extends AbstractGuiGame {
         }
         final JsonObject o = question(String.valueOf(hostCard));
         o.add("card", JsonView.id(hostCard));
-        o.add("options", options(abilities, null));
+        final JsonArray options = options(abilities, null);
+        for (int i = 0; i < abilities.size(); i++) {
+            options.get(i).getAsJsonObject().addProperty("can_play", abilities.get(i).canPlay());
+        }
+        o.add("options", options);
         o.addProperty("min", 0);
         o.addProperty("max", 1);
         final List<SpellAbilityView> got = pick(abilities, ask("ability", o, new JsonArray()));
         return got.isEmpty() ? null : got.get(0);
     }
 
-    /** Not asked yet (M3): the damage goes to the first blocker, or to what was attacked. */
+    /** The damage that kills it, as Forge's own window counts it (VAssignCombatDamage.getDamageToKill). */
+    private int lethal(final CardView attacker, final GameEntityView target) {
+        if (target instanceof PlayerView p) {
+            return attacker.getCurrentState().hasInfect()
+                    ? Math.max(0, getGameView().getPoisonCountersToLose() - p.getCounters(forge.game.card.CounterEnumType.POISON))
+                    : p.getLife();
+        }
+        final CardView c = (CardView) target;
+        if (c.getCurrentState().isPlaneswalker() || c.getCurrentState().isBattle()) {
+            try {
+                return Integer.parseInt(c.getCurrentState().isPlaneswalker() ? c.getCurrentState().getLoyalty()
+                        : c.getCurrentState().getDefense());
+            } catch (final RuntimeException e) {
+                return 0;
+            }
+        }
+        final int n = Math.max(0, c.getLethalDamage());
+        return attacker.getCurrentState().hasDeathtouch() ? Math.min(n, 1) : n;
+    }
+
+    /**
+     * Combat damage shared out between the creatures blocking (and what was attacked, when the damage
+     * may go on to it). Kind `damage`: the answer is one number for each option, adding up to `amount`;
+     * "skip" puts it off when `may_skip`.
+     */
     @Override
     public Map<CardView, Integer> assignCombatDamage(final CardView attacker, final List<CardView> blockers, final int damage,
             final GameEntityView defender, final boolean overrideOrder, final boolean maySkip) {
+        final List<CardView> list = blockers == null ? new ArrayList<>() : blockers;
+        final boolean divide = attacker.getCurrentState().hasDivideDamage();
+        final boolean toDefender = defender != null && (attacker.getCurrentState().hasTrample() || divide && overrideOrder
+                || list.isEmpty());
+        final List<GameEntityView> targets = new ArrayList<>(list);
+        if (toDefender) {
+            targets.add(defender);
+        }
         final JsonObject o = question("Combat damage");
         o.add("card", JsonView.id(attacker));
-        o.add("options", options(blockers, null));
         o.addProperty("amount", damage);
         o.add("defender", JsonView.entity(defender));
         o.addProperty("may_skip", maySkip);
-        tell("damage", o);
-        if (maySkip) {
+        o.addProperty("any_order", overrideOrder);
+        o.addProperty("deathtouch", attacker.getCurrentState().hasDeathtouch());
+        final JsonArray options = new JsonArray();
+        final JsonArray standard = new JsonArray();
+        final int[] kills = new int[targets.size()];
+        int left = damage;
+        for (int i = 0; i < targets.size(); i++) {
+            final GameEntityView t = targets.get(i);
+            kills[i] = lethal(attacker, t);
+            final JsonObject x = JsonView.entity(t);
+            x.addProperty("i", i);
+            x.addProperty("text", String.valueOf(t));
+            x.addProperty("lethal", kills[i]);
+            x.addProperty("defender", t == defender);
+            options.add(x);
+            // the usual way: what kills each in turn, whatever is left to the last
+            final int n = i == targets.size() - 1 ? left : Math.min(kills[i], left);
+            standard.add(n);
+            left -= n;
+        }
+        o.add("options", options);
+        if (targets.isEmpty()) {
             return null;
         }
+        final JsonElement v = ask("damage", o, standard);
+        if (maySkip && v.isJsonPrimitive() && "skip".equals(v.getAsString())) {
+            return null;        // decide later: Forge asks again after the other attackers
+        }
+        JsonArray given = v.isJsonArray() ? v.getAsJsonArray() : standard;
+        if (!validDamage(given, kills, damage, toDefender, overrideOrder || divide)) {
+            error("That isn't a way to share out " + damage + " damage: the usual way is used.");
+            given = standard;
+        }
         final Map<CardView, Integer> map = new LinkedHashMap<>();
-        map.put(blockers == null || blockers.isEmpty() ? null : blockers.get(0), damage);
+        for (int i = 0; i < targets.size(); i++) {
+            final int n = given.get(i).getAsInt();
+            if (n > 0) {
+                map.put(targets.get(i) == defender ? null : (CardView) targets.get(i), n);      // null: what was attacked
+            }
+        }
         return map;
     }
 
-    /** Not asked yet (M3): everything goes to the first target. */
+    /** All of it shared out, nothing below zero – and, in the usual order, nothing past a creature that isn't dead yet. */
+    private static boolean validDamage(final JsonArray given, final int[] kills, final int damage, final boolean toDefender,
+            final boolean anyOrder) {
+        if (given.size() != kills.length) {
+            return false;
+        }
+        try {
+            int sum = 0;
+            boolean allDead = true;
+            for (int i = 0; i < kills.length; i++) {
+                final int n = given.get(i).getAsInt();
+                if (n < 0) {
+                    return false;
+                }
+                final boolean isDefender = toDefender && i == kills.length - 1;
+                if (n > 0 && !allDead && (!anyOrder || isDefender)) {
+                    return false;
+                }
+                if (!isDefender) {
+                    allDead &= n >= kills[i];
+                }
+                sum += n;
+            }
+            return sum == damage;
+        } catch (final RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * An amount shared out between several things (damage divided as you choose, counters, a shield,
+     * mana of several colours). Kind `amount`: the answer is one number for each option, adding up
+     * to `amount`.
+     */
     @Override
     public Map<Object, Integer> assignGenericAmount(final CardView effectSource, final Map<Object, Integer> target,
             final int amount, final boolean atLeastOne, final String amountLabel) {
+        final List<Object> keys = new ArrayList<>(target.keySet());
         final JsonObject o = question(amountLabel);
         o.add("card", JsonView.id(effectSource));
-        o.add("options", options(new ArrayList<>(target.keySet()), null));
         o.addProperty("amount", amount);
         o.addProperty("at_least_one", atLeastOne);
-        tell("amount", o);
-        final Map<Object, Integer> map = new LinkedHashMap<>();
+        final JsonArray options = options(keys, null);
+        final JsonArray standard = new JsonArray();
         int left = amount;
-        for (final Object key : target.keySet()) {
-            final int n = map.isEmpty() ? left - (atLeastOne ? target.size() - 1 : 0) : atLeastOne ? 1 : 0;
-            map.put(key, Math.max(0, n));
-            left -= n;
+        for (int i = 0; i < keys.size(); i++) {
+            final Integer most = target.get(keys.get(i));
+            options.get(i).getAsJsonObject().addProperty("max", most == null ? amount : most);
+            final int floor = atLeastOne ? 1 : 0;
+            final int after = atLeastOne ? keys.size() - 1 - i : 0;       // what the ones after this must still get
+            final int n = Math.max(floor, Math.min(most == null ? left : most, left - after));
+            standard.add(Math.max(0, Math.min(n, left)));
+            left -= standard.get(i).getAsInt();
+        }
+        o.add("options", options);
+        final Map<Object, Integer> map = new LinkedHashMap<>();
+        if (keys.isEmpty()) {
+            return map;
+        }
+        final JsonElement v = ask("amount", o, standard);
+        JsonArray given = v.isJsonArray() ? v.getAsJsonArray() : standard;
+        boolean valid = given.size() == keys.size();
+        int sum = 0;
+        try {
+            for (int i = 0; valid && i < keys.size(); i++) {
+                final int n = given.get(i).getAsInt();
+                final Integer most = target.get(keys.get(i));
+                valid = n >= (atLeastOne ? 1 : 0) && (most == null || n <= most);
+                sum += n;
+            }
+        } catch (final RuntimeException e) {
+            valid = false;
+        }
+        if (!valid || sum != amount) {
+            if (given != standard) {
+                error("That isn't a way to share out " + amount + ": the usual way is used.");
+            }
+            given = standard;
+        }
+        for (int i = 0; i < keys.size(); i++) {
+            map.put(keys.get(i), given.get(i).getAsInt());
         }
         return map;
     }
@@ -880,9 +1707,16 @@ public class JsonGuiGame extends AbstractGuiGame {
     public void setPlayerAvatar(final LobbyPlayer player, final IHasIcon ihi) {
     }
 
-    /** Watching fast: don't stop at each phase (Forge's playback waits a moment at those it stops at). */
+    /**
+     * Watching fast: don't stop at each phase (Forge's playback waits a moment at those it stops at).
+     * A person playing: asked what to do only at their stops (while the stack is empty).
+     */
     @Override
     public boolean isUiSetToSkipPhase(final PlayerView playerTurn, final PhaseType phase) {
-        return !interactive && wantedSpeed == PlaybackSpeed.FAST;
+        if (!interactive) {
+            return wantedSpeed == PlaybackSpeed.FAST;
+        }
+        final PlayerView me = getCurrentPlayer();
+        return !stops(me != null && playerTurn != null && playerTurn.getId() == me.getId()).contains(phase);
     }
 }

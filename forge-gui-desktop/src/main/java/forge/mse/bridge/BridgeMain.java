@@ -33,14 +33,20 @@ import forge.util.MyRandom;
 
 /**
  * MSE Play's bridge: plays one game in Forge and tells it, as JSON lines, to a table connected
- * on 127.0.0.1 (the messages: plans/mse-play.md in the engine repository). Milestone M0: both
- * players are Forge's AI and the table only watches.
+ * on 127.0.0.1 (the messages: plans/mse-play.md in the engine repository). Without --human every
+ * player is Forge's AI and the table only watches; with it the table plays the --me deck.
  *
  * <pre>
  * java -cp forge.jar forge.mse.bridge.BridgeMain --port N --profile run/forge.profile.properties
  *      --me "My deck.dck" --ai "Their deck.dck" [--seed S] [--out game.jsonl] [--speed fast|normal|slow]
  *      [--format Commander] [--life N] [--no-wait] [--timeout SECONDS]
+ *      [--human] [--name NAME] [--auto-pay] [--stops "mine=MAIN1,MAIN2;theirs=COMBAT_DECLARE_ATTACKERS"]
  * </pre>
+ *
+ * --human: the first seat is a person, playing through the table (which must be there: no --no-wait).
+ * --auto-pay: costs Forge can pay by itself are paid without asking. --stops: the phases at which the
+ * person is asked what to do while the stack is empty (Forge's names; "all", "none"; a side left out
+ * keeps Forge's own settings). With --speed fast Forge's short waits between phases are left out.
  *
  * Start it in the folder that has Forge's res/ (a checkout's forge-gui, or the add-on's folder),
  * as every Forge run. --profile is copied there as forge.profile.properties (the converter's
@@ -61,8 +67,8 @@ public final class BridgeMain {
         final List<String> ai = new ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             final String a = args[i];
-            if (a.equals("--no-wait")) {
-                opt.put("no-wait", "1");
+            if (a.equals("--no-wait") || a.equals("--human") || a.equals("--auto-pay")) {
+                opt.put(a.substring(2), "1");
             } else if (a.startsWith("--") && i + 1 < args.length) {
                 if (a.equals("--ai")) {
                     ai.add(args[++i]);
@@ -82,6 +88,11 @@ public final class BridgeMain {
         final long seed = opt.containsKey("seed") ? Long.parseLong(opt.get("seed")) : new Random().nextLong();
         final PlaybackSpeed speed = PlaybackSpeed.valueOf(opt.getOrDefault("speed", "normal").toUpperCase());
         final boolean noWait = opt.containsKey("no-wait") || !opt.containsKey("port");
+        final boolean humanPlays = opt.containsKey("human");
+        if (humanPlays && noWait) {
+            usage("--human needs a table: --port, and no --no-wait");
+        }
+        final String name = opt.getOrDefault("name", "You");
 
         if (System.getProperty("java.awt.headless") == null) {
             System.setProperty("java.awt.headless", "true");
@@ -126,6 +137,16 @@ public final class BridgeMain {
             p.setPref(FPref.LOAD_CARD_SCRIPTS_LAZILY, false);
             p.setPref(FPref.UI_ENABLE_SOUNDS, false);
             p.setPref(FPref.UI_ENABLE_MUSIC, false);
+            p.setPref(FPref.UI_RECORD_REPLAYS, false);      // Forge's own replay files: not wanted here
+            if (humanPlays) {
+                p.setPref(FPref.PLAYER_NAME, name);                     // else Forge asks for one in a dialog
+                p.setPref(FPref.UI_SHOW_ACTIONABLE_HIGHLIGHTS, true);   // the prompt's `playable` cards
+                p.setPref(FPref.UI_SHOW_AUTOTAP_PREVIEW, true);         // and what Auto would tap
+                if (speed == PlaybackSpeed.FAST) {
+                    p.setPref(FPref.YIELD_SKIP_PHASE_DELAY, true);
+                    p.setPref(FPref.YIELD_SKIP_RESOLVE_DELAY, true);
+                }
+            }
             return null;
         });
 
@@ -149,14 +170,50 @@ public final class BridgeMain {
             if (opt.containsKey("life")) {
                 rp.setStartingLife(Integer.parseInt(opt.get("life")));
             }
-            // M0: every seat is Forge's AI. M2 seats a person at the first one (LobbyPlayerHuman, with
-            // the JsonGuiGame as its window – HostedMatch.startMatch(rules, variants, players, human, gui)).
-            rp.setPlayer(GamePlayerUtil.createAiPlayer(d.getName(), i));
+            if (humanPlays && i == 0) {
+                // Forge's own "the person at this computer": HostedMatch gives the seat a
+                // PlayerControllerHuman whose window is the JsonGuiGame
+                final forge.LobbyPlayer person = GamePlayerUtil.getGuiPlayer();
+                person.setName(name);
+                rp.setPlayer(person);
+            } else {
+                rp.setPlayer(GamePlayerUtil.createAiPlayer(d.getName(), i));
+            }
             players.add(rp);
         }
 
         gui = new JsonGuiGame(wire, seed, speed);
         base.setGui(gui);
+        final CountDownLatch over = new CountDownLatch(1);
+        if (humanPlays) {
+            gui.setInteractive(true);
+            gui.setAutoPay(opt.containsKey("auto-pay"));
+            gui.setOnGameOver(over::countDown);     // nobody clicks Forge's own "quit" after the game
+            if (opt.containsKey("stops")) {
+                try {
+                    java.util.Set<forge.game.phase.PhaseType> mine = null;
+                    java.util.Set<forge.game.phase.PhaseType> theirs = null;
+                    for (final String part : opt.get("stops").split(";")) {
+                        final String[] kv = part.split("=", 2);
+                        if (kv.length == 1) {       // one list: both sides
+                            mine = JsonGuiGame.parsePhases(kv[0]);
+                            theirs = mine;
+                        } else if (kv[0].trim().equalsIgnoreCase("mine")) {
+                            mine = JsonGuiGame.parsePhases(kv[1]);
+                        } else if (kv[0].trim().equalsIgnoreCase("theirs")) {
+                            theirs = JsonGuiGame.parsePhases(kv[1]);
+                        } else {
+                            usage("--stops: mine=… or theirs=…, not " + kv[0]);
+                        }
+                    }
+                    gui.setStops(mine, theirs);
+                } catch (final IllegalArgumentException e) {
+                    usage("--stops: " + e.getMessage() + " isn't a phase (UPKEEP, DRAW, MAIN1, COMBAT_BEGIN, "
+                            + "COMBAT_DECLARE_ATTACKERS, COMBAT_DECLARE_BLOCKERS, COMBAT_FIRST_STRIKE_DAMAGE, COMBAT_DAMAGE, "
+                            + "COMBAT_END, MAIN2, END_OF_TURN, CLEANUP)");
+                }
+            }
+        }
         wire.setOnDisconnect(() -> {
             System.out.println("MSE-BRIDGE the table left");
             finish(gui.isGameOverSent() ? 0 : 3);
@@ -172,11 +229,14 @@ public final class BridgeMain {
         }
 
         MyRandom.setRandom(new Random(seed));
-        final CountDownLatch over = new CountDownLatch(1);
         final HostedMatch match = new HostedMatch();
         match.setOnMatchOver(over::countDown);
-        // no person at the table: HostedMatch asks BridgeGui for a window and registers it as a spectator
-        match.startMatch(rules, null, players, (RegisteredPlayer) null, null);
+        if (humanPlays) {
+            match.startMatch(rules, null, players, players.get(0), gui);
+        } else {
+            // no person at the table: HostedMatch asks BridgeGui for a window and registers it as a spectator
+            match.startMatch(rules, null, players, (RegisteredPlayer) null, null);
+        }
 
         final long timeout = Long.parseLong(opt.getOrDefault("timeout", "0"));
         if (timeout > 0) {
@@ -215,7 +275,8 @@ public final class BridgeMain {
         System.err.println(problem);
         System.err.println("java -cp forge.jar forge.mse.bridge.BridgeMain --port N --profile forge.profile.properties"
                 + " --me deck.dck --ai deck.dck [--seed S] [--out game.jsonl] [--speed fast|normal|slow]"
-                + " [--format Commander] [--life N] [--no-wait] [--wait SECONDS] [--timeout SECONDS]");
+                + " [--format Commander] [--life N] [--no-wait] [--wait SECONDS] [--timeout SECONDS]"
+                + " [--human] [--name NAME] [--auto-pay] [--stops \"mine=MAIN1,MAIN2;theirs=END_OF_TURN\"]");
         System.exit(2);
     }
 }
