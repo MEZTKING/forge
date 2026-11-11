@@ -371,8 +371,25 @@ public class PlayerControllerHuman extends PlayerController implements IGameCont
         return result;
     }
 
+    /** The spell or ability whose X is being announced right now (null otherwise): a window can work out
+     *  the highest X that can be paid (MSE Play's bridge does). */
+    private volatile SpellAbility announcingX = null;
+
+    public SpellAbility getAnnouncingX() {
+        return announcingX;
+    }
+
     @Override
     public Integer announceRequirements(final SpellAbility ability, int min, int max, final String announce) {
+        announcingX = "X".equals(announce) ? ability : null;
+        try {
+            return announceRequirements0(ability, min, max, announce);
+        } finally {
+            announcingX = null;
+        }
+    }
+
+    private Integer announceRequirements0(final SpellAbility ability, int min, int max, final String announce) {
         final Card host = ability.getHostCard();
         Cost cost = ability.getPayCosts();
 

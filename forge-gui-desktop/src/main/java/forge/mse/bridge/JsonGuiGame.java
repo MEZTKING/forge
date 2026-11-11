@@ -1415,16 +1415,49 @@ public class JsonGuiGame extends AbstractGuiGame {
         }
         final JsonObject o = question(message);
         o.addProperty("min", min);
-        if (max != Integer.MAX_VALUE) {
+        // X of a spell or ability being cast: the highest X that can be paid now, as Forge works it out
+        // (every untapped mana source and the pool, the rest of the cost taken off, {X}{X}, colours)
+        final Integer canPay = highestX(o);
+        int most = max;
+        if (canPay != null) {
+            most = Math.max(min, Math.min(max, canPay));
+            o.addProperty("max", most);
+        } else if (max != Integer.MAX_VALUE) {
             o.addProperty("max", max);
         } else {
             o.add("max", JsonNull.INSTANCE);
         }
-        final JsonElement v = ask("number", o, new JsonPrimitive(min));
+        o.addProperty("max_known", canPay != null || max != Integer.MAX_VALUE);
+        final JsonElement v = ask("number", o, new JsonPrimitive(canPay != null ? most : min));
         try {
             return v.isJsonNull() ? null : Math.max(min, Math.min(max, v.getAsInt()));
         } catch (final RuntimeException e) {
             return min;
+        }
+    }
+
+    /**
+     * While the person announces X: adds `x: true`, `mana` (what they can make now: untapped sources and
+     * the pool) and `x_mana` (mana each X costs: 2 for {X}{X}) to the prompt and returns the highest X
+     * Forge can pay, or null when it isn't an X or Forge can't tell. Game thread (it waits for the answer).
+     */
+    private Integer highestX(final JsonObject o) {
+        final PlayerControllerHuman h = human;
+        final forge.game.spellability.SpellAbility sa = h == null ? null : h.getAnnouncingX();
+        if (sa == null) {
+            return null;
+        }
+        o.addProperty("x", true);
+        try {
+            final Player p = h.getPlayer();
+            final forge.game.cost.Cost cost = sa.getRootAbility().getPayCosts();
+            final forge.game.cost.CostPartMana part = cost == null ? null : cost.getCostMana();
+            o.addProperty("x_mana", part == null ? 1 : Math.max(1, part.getMana().countX()));
+            o.addProperty("mana", forge.ai.ComputerUtilMana.getAvailableManaEstimate(p, true)
+                    + p.getManaPool().totalMana());
+            return Math.max(0, forge.ai.ComputerUtilMana.determineLeftoverMana(sa, p, false));
+        } catch (final RuntimeException e) {
+            return null;
         }
     }
 
