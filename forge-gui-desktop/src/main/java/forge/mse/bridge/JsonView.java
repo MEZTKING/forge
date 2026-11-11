@@ -48,9 +48,16 @@ public final class JsonView {
     private static final String[] MANA_NAMES = { "W", "U", "B", "R", "G", "C" };
 
     private final PlayerView viewer;
+    private final boolean showAll;
 
     public JsonView(final PlayerView viewer0) {
+        this(viewer0, false);
+    }
+
+    /** @param showAll0  a testing switch: every card is shown, whoever looks */
+    public JsonView(final PlayerView viewer0, final boolean showAll0) {
         viewer = viewer0;
+        showAll = showAll0;
     }
 
     // ------------------------------------------------------------------ the game
@@ -185,7 +192,7 @@ public final class JsonView {
             }
             final ZoneType zone = c.getZone();
             final boolean onTable = inState(zone)
-                    && !(zone == ZoneType.Hand && viewer != null && !viewer.equals(c.getController()));
+                    && !(zone == ZoneType.Hand && !showAll && viewer != null && !viewer.equals(c.getController()));
             if (!onTable) {
                 a.add(card(c));
             }
@@ -194,7 +201,7 @@ public final class JsonView {
     }
 
     public boolean maySee(final CardView c) {
-        return viewer == null || c.canBeShownTo(viewer);
+        return showAll || viewer == null || c.canBeShownTo(viewer);
     }
 
     /** One card. Never throws: a card that can't be read comes with "error". */

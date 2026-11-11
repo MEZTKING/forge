@@ -76,7 +76,7 @@ public class MulliganService {
 
                 Player p = mulligan.getPlayer();
 
-                boolean keep = !mulligan.canMulligan() ||
+                boolean keep = !game.getRules().areMulligansAllowed() || !mulligan.canMulligan() ||
                         p.getController().mulliganKeepHand(
                                 firstPlayer,
                                 mulligan.tuckCardsDuringMulligan()

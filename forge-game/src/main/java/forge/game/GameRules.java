@@ -18,6 +18,12 @@ public class GameRules {
     private boolean allowCheatShuffle = false;
     private final Set<GameType> appliedVariants = EnumSet.noneOf(GameType.class);
     private int simTimeout = 120;
+    // MSE Play's testing options (the bridge sets them; Forge's own values otherwise)
+    private int commanderDamageToLose = 21;
+    private boolean commanderTax = true;
+    private boolean drawFromEmptyLibraryLoses = true;
+    private boolean mulligansAllowed = true;
+    private int firstPlayer = -1;   // the seat that takes the first turn; -1: decided as usual
 
     // it's a preference, not rule... but I could hardly find a better place for it
     private boolean useGrayText;
@@ -148,5 +154,40 @@ public class GameRules {
 
     public void setSimTimeout(final int duration) {
         this.simTimeout = duration;
+    }
+
+    public int getCommanderDamageToLose() {
+        return commanderDamageToLose;
+    }
+    public void setCommanderDamageToLose(final int amount) {
+        this.commanderDamageToLose = amount;
+    }
+
+    public boolean hasCommanderTax() {
+        return commanderTax;
+    }
+    public void setCommanderTax(final boolean commanderTax) {
+        this.commanderTax = commanderTax;
+    }
+
+    public boolean drawFromEmptyLibraryLoses() {
+        return drawFromEmptyLibraryLoses;
+    }
+    public void setDrawFromEmptyLibraryLoses(final boolean loses) {
+        this.drawFromEmptyLibraryLoses = loses;
+    }
+
+    public boolean areMulligansAllowed() {
+        return mulligansAllowed;
+    }
+    public void setMulligansAllowed(final boolean allowed) {
+        this.mulligansAllowed = allowed;
+    }
+
+    public int getFirstPlayer() {
+        return firstPlayer;
+    }
+    public void setFirstPlayer(final int seat) {
+        this.firstPlayer = seat;
     }
 }

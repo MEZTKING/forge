@@ -178,13 +178,31 @@ public class JsonGuiGame extends AbstractGuiGame {
     private int unshownTries = 0;
     private static final java.util.concurrent.ThreadPoolExecutor GAME_THREADS = gameThreads();
     private final Map<Input, Integer> inputRevs = new java.util.WeakHashMap<>();
+    // MSE Play's testing tools, and catching up with a kept game
+    private final BridgeOptions options;
+    private final DevTools dev;
+    private volatile boolean showAll = false;
+    private volatile boolean aiLog = false;
+    private volatile boolean quiet = false;         // catching up: no `state` and `cards` messages
+    private int quietStates = 0;
+    private PlayerView viewer = null;
+    private PlaybackSpeed speedNow = PlaybackSpeed.NORMAL;
 
     private record AbilityChoice(int card, int count) { }
 
     public JsonGuiGame(final BridgeWire wire0, final long seed0, final PlaybackSpeed speed) {
+        this(wire0, seed0, speed, new BridgeOptions());
+    }
+
+    public JsonGuiGame(final BridgeWire wire0, final long seed0, final PlaybackSpeed speed, final BridgeOptions options0) {
         wire = wire0;
         seed = seed0;
         wantedSpeed = speed;
+        options = options0;
+        dev = new DevTools(this, wire0, options0);
+        showAll = options0.showOpponentHand;
+        aiLog = options0.aiLog;
+        quiet = options0.replayFast;
         wire.setListener(this::onMessage);
         wire.setOnConnect(() -> resync = true);
     }
@@ -282,7 +300,16 @@ public class JsonGuiGame extends AbstractGuiGame {
         }
         game = g;
         final PlayerView me = myPlayers == null || myPlayers.isEmpty() ? null : myPlayers.get(0);
-        view = new JsonView(me);
+        viewer = me;
+        view = new JsonView(me, showAll);
+        dev.setGame(g);
+        if (options.handSize >= 0) {        // Forge takes the opening hand's size for the most cards a hand may hold too
+            for (final Player p : g.getPlayers()) {
+                p.setMaxHandSize(7);
+            }
+        }
+        BridgeAi.setLog(this::aiSays);
+        BridgeAi.setPause(this::pauseBeforeAi);
         logSent = 0;
         lastState = "";
         gameOverSent = false;
@@ -319,6 +346,10 @@ public class JsonGuiGame extends AbstractGuiGame {
             final RegisteredPlayer rp = p.getRegisteredPlayer();
             po.addProperty("deck", rp == null || rp.getDeck() == null ? null : rp.getDeck().getName());
             po.addProperty("life", p.getStartingLife());
+            if (p.getLobbyPlayer() instanceof BridgeAi ai) {
+                po.addProperty("ai_profile", ai.getAiProfile());
+                po.addProperty("ai_mode", ai.getMode().name().toLowerCase());
+            }
             players.add(po);
         }
         o.add("players", players);
@@ -327,6 +358,16 @@ public class JsonGuiGame extends AbstractGuiGame {
             zones.add(z);
         }
         o.add("zones", zones);
+        // testing: what this game was started with, and what `dev` can do (left to the table to show)
+        o.addProperty("testing", options.testing);
+        o.add("options", options.toJson());
+        if (options.testing) {
+            final JsonArray ops = new JsonArray();
+            for (final String op : DevTools.OPS) {
+                ops.add(op);
+            }
+            o.add("dev_ops", ops);
+        }
         if (interactive) {
             final JsonObject stops = new JsonObject();
             stops.add("mine", names(stops(true)));
@@ -340,6 +381,10 @@ public class JsonGuiGame extends AbstractGuiGame {
     @Subscribe
     public void onGameEvent(final GameEvent ev) {
         try {
+            if (ev instanceof GameEventPlayerPriority) {
+                dev.atPriority();       // the game is at rest: the testing tools' turn
+            }
+            dev.onEvent(ev);
             if (ev instanceof GameEventCardTapped e) {
                 changed(Collections.singleton(e.card()));
             } else if (ev instanceof GameEventCardCounters e) {
@@ -353,6 +398,7 @@ public class JsonGuiGame extends AbstractGuiGame {
             } else if (ev instanceof GameEventCardStatsChanged e) {
                 changed(e.cards());
             } else if (ev instanceof GameEventGameOutcome e) {
+                quiet = false;      // the end of the game is always shown, also to a table that was catching up
                 dirty = true;
                 sendState();
                 sendGameOver(e);
@@ -396,6 +442,9 @@ public class JsonGuiGame extends AbstractGuiGame {
                 showPrompt(false);
             }
         }
+        if (quiet && (options.replayStates <= 0 || ++quietStates % options.replayStates != 0)) {
+            return;         // catching up: the table isn't drawing
+        }
         dirty = false;
         final JsonObject o = view.state(gv);
         final String text = BridgeWire.toJson(o);
@@ -409,6 +458,9 @@ public class JsonGuiGame extends AbstractGuiGame {
     /** Some cards changed where they are (tapped, counters, damage, size): the cheap update. */
     private void changed(final Iterable<CardView> cards) {
         dirty = true;
+        if (quiet) {
+            return;
+        }
         final JsonObject o = msg("cards");
         final JsonArray a = view.cards(cards);
         if (a.isEmpty()) {
@@ -490,8 +542,131 @@ public class JsonGuiGame extends AbstractGuiGame {
         if (interactive || c == null) {
             return;
         }
-        for (PlaybackSpeed s = PlaybackSpeed.NORMAL; s != wantedSpeed; s = s.nextSpeed()) {
+        final PlaybackSpeed wanted = quiet ? PlaybackSpeed.FAST : wantedSpeed;
+        for (PlaybackSpeed s = speedNow; s != wanted; s = s.nextSpeed()) {
             c.selectButtonCancel();
+        }
+        speedNow = wanted;
+    }
+
+    // ================================================================== testing tools
+
+    PlayerControllerHuman human() {
+        return human;
+    }
+
+    /** True when something is to be set up before the first turn (BridgeMain gives Forge the hook for it). */
+    public boolean hasStart() {
+        return dev.hasStart();
+    }
+
+    /** Forge's start hook, on the game thread. */
+    public void applyStart() {
+        dev.applyStart();
+    }
+
+    /** The testing tools changed the game: the next `state` has it. */
+    void devChanged() {
+        dirty = true;
+    }
+
+    /** Every hand is shown to the table (a testing switch) – or only what the person may look at again. */
+    void setShowAll(final boolean on) {
+        showAll = on;
+        view = new JsonView(viewer, on);
+        dirty = true;
+    }
+
+    void setAiLog(final boolean on) {
+        aiLog = on;
+    }
+
+    /** What the AI decided, as a `log` line of kind AI (BridgeAi tells it on the game thread). */
+    private void aiSays(final Player p, final String text) {
+        if (!aiLog) {
+            return;
+        }
+        final JsonObject o = msg("log");
+        o.addProperty("kind", "AI");
+        o.addProperty("player", p.getId());
+        o.addProperty("text", text);
+        wire.send(o);
+    }
+
+    /** "Pause before the AI casts a spell": a question that waits for any answer (only when somebody plays). */
+    private boolean pauseBeforeAi(final forge.game.spellability.SpellAbility sa) {
+        if (!dev.pausesBeforeAi() || !interactive || sa.getHostCard() == null) {
+            return false;
+        }
+        final JsonObject o = question(sa.getActivatingPlayer() + " is about to " + (sa.isSpell() ? "cast " : "use ")
+                + sa.getHostCard() + ".");
+        o.addProperty("title", "Paused");
+        o.addProperty("pause", true);
+        o.addProperty("card", sa.getHostCard().getId());
+        final JsonArray labels = new JsonArray();
+        labels.add("Continue");
+        o.add("options", labels);
+        ask("confirm", o, new JsonPrimitive(true));
+        return true;
+    }
+
+    /**
+     * `dev` from the table (the reader's thread). A message with `at` waits for its moment; any other
+     * is done as soon as the game is at rest – at once when the person is being asked what to do
+     * (that prompt is ended without an action, as Forge's undo does, and asked again afterwards).
+     */
+    private void dev(final JsonObject m) {
+        if (!m.has("op") && "export_state".equals(m.get("t").getAsString())) {
+            m.addProperty("op", "export_state");
+        }
+        if (m.has("at") || !interactive) {
+            if (dev.onDev(m) && !m.has("at")) {
+                dev.saidQueued(m);
+            }
+            return;
+        }
+        forge.gui.FThreads.invokeInEdtLater(() -> {
+            final Input in = currentInput();
+            final boolean kick = in instanceof InputPassPriority && !gameOverSent;
+            m.addProperty("kicked", kick);
+            if (!dev.onDev(m)) {
+                return;
+            }
+            if (kick) {
+                ((InputPassPriority) in).restartPrompt();
+            } else {
+                dev.saidQueued(m);
+            }
+        });
+    }
+
+    /** The table has caught up with a kept game (`replay_done`), or a watched one reached --replay-until. */
+    void caughtUp() {
+        if (!quiet) {
+            return;
+        }
+        quiet = false;
+        dirty = true;
+        final JsonObject o = msg("log");
+        o.addProperty("kind", "DEV");
+        o.addProperty("text", "Caught up.");
+        o.addProperty("caught_up", true);
+        wire.send(o);
+        if (interactive) {
+            if (wantedSpeed != PlaybackSpeed.FAST) {
+                FModel.getPreferences().setPref(FPref.YIELD_SKIP_PHASE_DELAY, false);
+                FModel.getPreferences().setPref(FPref.YIELD_SKIP_RESOLVE_DELAY, false);
+            }
+            resend = true;
+            inputChanged();
+        } else {
+            final IGameController c = getGameController();
+            if (c != null && speedSet) {
+                setSpeed();
+                if (options.replayPause) {
+                    c.selectButtonOk();
+                }
+            }
         }
     }
 
@@ -603,6 +778,13 @@ public class JsonGuiGame extends AbstractGuiGame {
                 } catch (final RuntimeException e) {
                     error("Those aren't phases: " + e.getMessage());
                 }
+                break;
+            case "dev":             // a testing tool {op, …}: answered with dev_result
+            case "export_state":    // {path?}: the position as a `scenario` message
+                dev(m);
+                break;
+            case "replay_done":     // the table has caught up (--replay-fast): states are sent again
+                caughtUp();
                 break;
             case "quit":
                 BridgeMain.finish(0);
@@ -913,6 +1095,12 @@ public class JsonGuiGame extends AbstractGuiGame {
         }
         try {
             final Input in = h.getInputQueue().getInput();
+            if (in instanceof InputPassPriority again && dev.takeRecheck()) {
+                // the testing tools changed the game just before this prompt: Forge is asked to look at
+                // the game again (state-based actions, triggers) and then asks afresh
+                again.restartPrompt();
+                return;
+            }
             final JsonObject o = msg("prompt");
             boolean press = false;
             boolean busy = false;
@@ -1787,7 +1975,13 @@ public class JsonGuiGame extends AbstractGuiGame {
     @Override
     public boolean isUiSetToSkipPhase(final PlayerView playerTurn, final PhaseType phase) {
         if (!interactive) {
-            return wantedSpeed == PlaybackSpeed.FAST;
+            return quiet || wantedSpeed == PlaybackSpeed.FAST;
+        }
+        if (dev.isSkipping()) {
+            return true;        // `skip_to`: the person's priority is passed for them
+        }
+        if (dev.holdsPriority()) {
+            return false;       // asked at every step
         }
         final PlayerView me = getCurrentPlayer();
         return !stops(me != null && playerTurn != null && playerTurn.getId() == me.getId()).contains(phase);

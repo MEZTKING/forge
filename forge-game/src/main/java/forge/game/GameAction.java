@@ -2436,6 +2436,12 @@ public class GameAction {
             return players.get(0);
         }
 
+        // a seat named beforehand (MSE Play's testing option): no coin, and nobody is asked
+        final int named = game.getRules().getFirstPlayer();
+        if (named >= 0 && named < game.getPlayers().size()) {
+            return game.getPlayers().get(named);
+        }
+
         boolean isFirstGame = lastGameOutcome == null;
         if (isFirstGame) {
             goesFirst = Aggregates.random(game.getPlayers());

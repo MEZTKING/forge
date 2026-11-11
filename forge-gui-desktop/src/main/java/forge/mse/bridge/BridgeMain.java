@@ -43,6 +43,13 @@ import forge.util.MyRandom;
  *      [--human] [--name NAME] [--auto-pay] [--stops "mine=MAIN1,MAIN2;theirs=COMBAT_DECLARE_ATTACKERS"]
  * </pre>
  *
+ * Testing (plans/mse-play.md, "Testing"; {@link BridgeOptions}, {@link DevTools}): --testing lets the table
+ * send `dev` messages; --life A,B --first me|opponent|random --mulligan … --hand-size N --poison A,B
+ * --counters … --players N (more --ai decks) --game-type … --commander-damage N --poison-to-lose N
+ * --no-commander-tax --no-draw-loss --turn-limit N --solo --ai-profile … --ai-mode … --ai-timeout S
+ * --show-opponent-hand --ai-log --starting-board FILE --dev-ops FILE; for continuing a kept game
+ * --replay-fast --replay-states N --replay-until TURN[:PHASE] --replay-pause --checkpoints N.
+ *
  * --human: the first seat is a person, playing through the table (which must be there: no --no-wait).
  * --auto-pay: costs Forge can pay by itself are paid without asking. --stops: the phases at which the
  * person is asked what to do while the stack is empty (Forge's names; "all", "none"; a side left out
@@ -67,7 +74,8 @@ public final class BridgeMain {
         final List<String> ai = new ArrayList<>();
         for (int i = 0; i < args.length; i++) {
             final String a = args[i];
-            if (a.equals("--no-wait") || a.equals("--human") || a.equals("--auto-pay")) {
+            if (a.equals("--no-wait") || a.equals("--human") || a.equals("--auto-pay")
+                    || a.startsWith("--") && BridgeOptions.isFlag(a.substring(2))) {
                 opt.put(a.substring(2), "1");
             } else if (a.startsWith("--") && i + 1 < args.length) {
                 if (a.equals("--ai")) {
@@ -79,9 +87,17 @@ public final class BridgeMain {
                 usage("Unknown argument: " + a);
             }
         }
-        if (!opt.containsKey("me") || ai.isEmpty()) {
-            usage("--me and --ai are needed");
+        if (!opt.containsKey("me") || ai.isEmpty() && !opt.containsKey("solo")) {
+            usage("--me and --ai are needed (or --solo: nobody on the other side)");
         }
+        BridgeOptions options = null;
+        try {
+            options = BridgeOptions.parse(opt);
+        } catch (final RuntimeException e) {
+            usage("An option isn't what it should be: " + e.getMessage());
+        }
+        final BridgeOptions o = options;
+        o.testing = o.testing || o.changesTheGame();
         if (!opt.containsKey("port") && !opt.containsKey("out")) {
             usage("--port or --out is needed");
         }
@@ -138,11 +154,14 @@ public final class BridgeMain {
             p.setPref(FPref.UI_ENABLE_SOUNDS, false);
             p.setPref(FPref.UI_ENABLE_MUSIC, false);
             p.setPref(FPref.UI_RECORD_REPLAYS, false);      // Forge's own replay files: not wanted here
+            // Forge's AI gives up thinking after this many seconds (5 as it comes): a game that is to be
+            // played again the same way mustn't depend on how fast the computer was
+            p.setPref(FPref.MATCH_AI_TIMEOUT, String.valueOf(o.aiTimeout));
             if (humanPlays) {
                 p.setPref(FPref.PLAYER_NAME, name);                     // else Forge asks for one in a dialog
                 p.setPref(FPref.UI_SHOW_ACTIONABLE_HIGHLIGHTS, true);   // the prompt's `playable` cards
                 p.setPref(FPref.UI_SHOW_AUTOTAP_PREVIEW, true);         // and what Auto would tap
-                if (speed == PlaybackSpeed.FAST) {
+                if (speed == PlaybackSpeed.FAST || o.replayFast) {
                     p.setPref(FPref.YIELD_SKIP_PHASE_DELAY, true);
                     p.setPref(FPref.YIELD_SKIP_RESOLVE_DELAY, true);
                 }
@@ -151,24 +170,90 @@ public final class BridgeMain {
         });
 
         // only now: GameType needs Forge's words loaded
-        final GameType type = GameType.valueOf(opt.getOrDefault("format", "Commander"));
+        GameType type0 = null;
+        try {
+            type0 = GameType.valueOf(o.gameType);
+        } catch (final IllegalArgumentException e) {
+            usage("--game-type: Commander, Brawl, Oathbreaker, TinyLeaders or Constructed – not " + o.gameType);
+        }
+        final GameType type = type0;
+        final boolean commander = type == GameType.Commander || type == GameType.Brawl || type == GameType.Oathbreaker
+                || type == GameType.TinyLeaders;
         final GameRules rules = new GameRules(type);
         rules.setAppliedVariants(EnumSet.of(type));
         rules.setGamesPerMatch(1);
-        final List<RegisteredPlayer> players = new ArrayList<>();
+        if (o.poisonToLose >= 0) {
+            rules.setPoisonCountersToLose(o.poisonToLose);
+        }
+        if (o.commanderDamage >= 0) {
+            rules.setCommanderDamageToLose(o.commanderDamage);
+        }
+        if (o.commanderTax != null) {
+            rules.setCommanderTax(o.commanderTax);
+        }
+        if (o.drawLoss != null) {
+            rules.setDrawFromEmptyLibraryLoses(o.drawLoss);
+        }
+        switch (o.mulligan) {
+            case "":
+                break;
+            case "none":
+            case "keep":
+                rules.setMulligansAllowed(false);
+                break;
+            case "london":
+            case "vancouver":
+            case "paris":
+            case "original":
+            case "houston":
+                forge.StaticData.instance().setMulliganRule(forge.MulliganDefs.GetRuleByName(
+                        o.mulligan.substring(0, 1).toUpperCase() + o.mulligan.substring(1)));
+                break;
+            default:
+                usage("--mulligan: london, vancouver, paris, original, houston, none or keep – not " + o.mulligan);
+        }
+        final List<String> profiles = forge.ai.AiProfileUtil.getAvailableProfiles();
+        for (final String profile : o.aiProfiles) {
+            if (!profiles.contains(profile)) {
+                usage("--ai-profile: " + profiles + " – not " + profile);
+            }
+        }
+        String usual = FModel.getPreferences().getPref(FPref.UI_CURRENT_AI_PROFILE);
+        if (!profiles.contains(usual)) {
+            usual = "Default";
+        }
+        final List<Deck> decks = new ArrayList<>();
         final List<String> files = new ArrayList<>();
         files.add(opt.get("me"));
         files.addAll(ai);
-        for (int i = 0; i < files.size(); i++) {
-            final File f = new File(files.get(i));
+        for (final String file : files) {
+            final File f = new File(file);
             final Deck d = f.isFile() ? DeckSerializer.fromFile(f) : null;
             if (d == null) {
                 usage("Can't read the deck " + f.getAbsolutePath());
             }
-            final RegisteredPlayer rp = type == GameType.Commander || type == GameType.Brawl || type == GameType.Oathbreaker
-                    || type == GameType.TinyLeaders ? RegisteredPlayer.forCommander(d) : new RegisteredPlayer(d);
-            if (opt.containsKey("life")) {
-                rp.setStartingLife(Integer.parseInt(opt.get("life")));
+            decks.add(d);
+        }
+        if (decks.size() == 1) {        // --solo and no deck for the other side: one that does nothing
+            final Deck nobody = new Deck("Nobody");
+            nobody.getMain().add("Wastes", 100);
+            decks.add(nobody);
+        }
+        final int seats = o.players > 0 ? o.players : decks.size();
+        if (seats < 2 || seats > 4 && o.players > 0) {
+            usage("--players: 2, 3 or 4");
+        }
+        final List<RegisteredPlayer> players = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        for (int i = 0; i < seats; i++) {
+            // more seats than decks: the opponents' decks again, in turn
+            final Deck d = i < decks.size() ? decks.get(i) : decks.get(1 + (i - 1) % (decks.size() - 1));
+            final RegisteredPlayer rp = commander ? RegisteredPlayer.forCommander(d) : new RegisteredPlayer(d);
+            if (!o.life.isEmpty()) {
+                rp.setStartingLife(BridgeOptions.forSeat(o.life, i, rp.getStartingLife()));
+            }
+            if (o.handSize >= 0) {
+                rp.setStartingHand(o.handSize);
             }
             if (humanPlays && i == 0) {
                 // Forge's own "the person at this computer": HostedMatch gives the seat a
@@ -176,13 +261,47 @@ public final class BridgeMain {
                 final forge.LobbyPlayer person = GamePlayerUtil.getGuiPlayer();
                 person.setName(name);
                 rp.setPlayer(person);
+                names.add(name);
             } else {
-                rp.setPlayer(GamePlayerUtil.createAiPlayer(d.getName(), i));
+                String aiName = d.getName();
+                for (int n = 2; names.contains(aiName); n++) {
+                    aiName = d.getName() + " (" + n + ")";
+                }
+                names.add(aiName);
+                BridgeAi.Mode mode = o.solo && i > 0 ? BridgeAi.Mode.PASSIVE : BridgeAi.Mode.NORMAL;
+                try {       // --ai-mode and --ai-profile count the AI seats: the first is the first opponent
+                    final int nth = humanPlays ? i - 1 : i;
+                    if (!o.aiModes.isEmpty()) {
+                        mode = BridgeAi.Mode.parse(BridgeOptions.forSeat(o.aiModes, nth, "normal"));
+                    }
+                    final BridgeAi seat = new BridgeAi(aiName, BridgeOptions.forSeat(o.aiProfiles, nth, usual), mode);
+                    seat.setAvatarIndex(i);
+                    seat.setSleeveIndex(0);
+                    rp.setPlayer(seat);
+                } catch (final IllegalArgumentException e) {
+                    usage("--ai-mode: normal, passive, no-attack, no-block or no-cast");
+                }
             }
             players.add(rp);
         }
+        switch (o.first) {
+            case "random":
+                break;
+            case "me":
+                rules.setFirstPlayer(0);
+                break;
+            case "opponent":
+                rules.setFirstPlayer(1);
+                break;
+            default:
+                try {
+                    rules.setFirstPlayer(Integer.parseInt(o.first));
+                } catch (final NumberFormatException e) {
+                    usage("--first: me, opponent, random or a seat (0, 1, 2, 3) – not " + o.first);
+                }
+        }
 
-        gui = new JsonGuiGame(wire, seed, speed);
+        gui = new JsonGuiGame(wire, seed, speed, o);
         base.setGui(gui);
         final CountDownLatch over = new CountDownLatch(1);
         if (humanPlays) {
@@ -231,6 +350,9 @@ public final class BridgeMain {
         MyRandom.setRandom(new Random(seed));
         final HostedMatch match = new HostedMatch();
         match.setOnMatchOver(over::countDown);
+        if (gui.hasStart()) {       // poison, counters, a starting board: set up just before the first turn
+            match.setStartGameHook(gui::applyStart);
+        }
         if (humanPlays) {
             match.startMatch(rules, null, players, players.get(0), gui);
         } else {
@@ -241,12 +363,12 @@ public final class BridgeMain {
         final long timeout = Long.parseLong(opt.getOrDefault("timeout", "0"));
         if (timeout > 0) {
             if (!over.await(timeout, TimeUnit.SECONDS)) {
-                final JsonObject o = new JsonObject();
-                o.addProperty("t", "game_over");
-                o.add("winner", JsonNull.INSTANCE);
-                o.addProperty("draw", true);
-                o.addProperty("reason", "Timeout");
-                wire.send(o);
+                final JsonObject late = new JsonObject();
+                late.addProperty("t", "game_over");
+                late.add("winner", JsonNull.INSTANCE);
+                late.addProperty("draw", true);
+                late.addProperty("reason", "Timeout");
+                wire.send(late);
                 System.out.println("MSE-BRIDGE the game took more than " + timeout + " seconds");
                 finish(3);
             }
@@ -276,7 +398,15 @@ public final class BridgeMain {
         System.err.println("java -cp forge.jar forge.mse.bridge.BridgeMain --port N --profile forge.profile.properties"
                 + " --me deck.dck --ai deck.dck [--seed S] [--out game.jsonl] [--speed fast|normal|slow]"
                 + " [--format Commander] [--life N] [--no-wait] [--wait SECONDS] [--timeout SECONDS]"
-                + " [--human] [--name NAME] [--auto-pay] [--stops \"mine=MAIN1,MAIN2;theirs=END_OF_TURN\"]");
+                + " [--human] [--name NAME] [--auto-pay] [--stops \"mine=MAIN1,MAIN2;theirs=END_OF_TURN\"]\n"
+                + "testing: [--testing] [--life A,B,C,D] [--first me|opponent|random|SEAT]"
+                + " [--mulligan london|vancouver|paris|original|houston|none|keep] [--hand-size N] [--poison A,B]"
+                + " [--counters \"ENERGY=3+EXPERIENCE=1,POISON=2\"] [--players 2-4] [--ai more.dck]…"
+                + " [--game-type Commander|Brawl|Oathbreaker|TinyLeaders|Constructed] [--commander-damage N]"
+                + " [--poison-to-lose N] [--no-commander-tax] [--no-draw-loss] [--turn-limit N] [--solo]"
+                + " [--ai-profile NAME,…] [--ai-mode normal|passive|no-attack|no-block|no-cast,…] [--ai-timeout SECONDS]"
+                + " [--show-opponent-hand] [--ai-log] [--starting-board FILE] [--dev-ops FILE]"
+                + " [--replay-fast] [--replay-states N] [--replay-until TURN[:PHASE]] [--replay-pause] [--checkpoints N]");
         System.exit(2);
     }
 }
