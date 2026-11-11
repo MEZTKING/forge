@@ -1,7 +1,9 @@
 package forge.mse.bridge;
 
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import com.google.common.collect.Multiset;
@@ -146,6 +148,46 @@ public final class JsonView {
                 if (c != null) {
                     a.add(card(c));
                 }
+            }
+        }
+        return a;
+    }
+
+    /** Whether a card in this zone is in every `state` (as a card, or as hidden) – the library is only a count. */
+    static boolean inState(final ZoneType zone) {
+        if (zone == null) {
+            return false;
+        }
+        for (final ZoneType z : ZONES) {
+            if (z == zone) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * `shown` in a prompt: the whole card for every card of `things` (CardViews; anything else is
+     * skipped) that the table can't find face up in the `state` – cards in a library, another
+     * player's hand, or in no zone. Cards the viewer may not look at come as {id, hidden: true} like
+     * everywhere else, so nothing hidden is given away: a card offered from your own library is
+     * one Forge lets you look at for the choice.
+     */
+    public JsonArray shown(final Iterable<?> things) {
+        final JsonArray a = new JsonArray();
+        if (things == null) {
+            return a;
+        }
+        final Set<Integer> seen = new HashSet<>();
+        for (final Object x : things) {
+            if (!(x instanceof CardView c) || !seen.add(c.getId())) {
+                continue;
+            }
+            final ZoneType zone = c.getZone();
+            final boolean onTable = inState(zone)
+                    && !(zone == ZoneType.Hand && viewer != null && !viewer.equals(c.getController()));
+            if (!onTable) {
+                a.add(card(c));
             }
         }
         return a;

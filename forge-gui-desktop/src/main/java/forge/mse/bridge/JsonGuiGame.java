@@ -152,6 +152,7 @@ public class JsonGuiGame extends AbstractGuiGame {
     private JsonElement promptCard = JsonNull.INSTANCE;
     private JsonObject promptButtons = buttons("OK", "Cancel", false, false, true);
     private JsonObject promptSelection = null;
+    private List<Object> selectionThings = List.of();     // the selection's cards and chosen ones (for `shown`)
     // a person plays: which Input the message and the buttons were shown for, and what was last sent
     private Input messageFor = null;
     private Input buttonsFor = null;
@@ -1005,6 +1006,15 @@ public class JsonGuiGame extends AbstractGuiGame {
                 if (!revealed.isEmpty()) {
                     o.add("revealed", view.cards(revealed));
                 }
+                // the cards to choose from that the table can't see in the state (your library…)
+                if (in != null) {
+                    final List<Object> things = new ArrayList<>(selectionThings);
+                    things.addAll(weak);
+                    final JsonArray shown = view.shown(things);
+                    if (!shown.isEmpty()) {
+                        o.add("shown", shown);
+                    }
+                }
                 if (busy && recheckQueued.compareAndSet(false, true)) {
                     // look again shortly: the prompt waits for the table once the game has caught up
                     forge.gui.FThreads.delayInEDT(15, () -> {
@@ -1111,8 +1121,11 @@ public class JsonGuiGame extends AbstractGuiGame {
     public void setSelection(final Selection next) {
         super.setSelection(next);
         final JsonObject s = selection(next);
+        final List<Object> things = new ArrayList<>(next.cards());
+        things.addAll(next.chosen());
         synchronized (promptLock) {
             promptSelection = next == Selection.NONE ? null : s;
+            selectionThings = things;
         }
         promptChanged();
     }
@@ -1286,6 +1299,24 @@ public class JsonGuiGame extends AbstractGuiGame {
         return new ArrayList<>(picked.values());
     }
 
+    /** `shown` for a question whose options are cards the table can't see in the state. */
+    private JsonObject withShown(final JsonObject o, final Iterable<?> things, final DelayedReveal reveal) {
+        final List<Object> all = new ArrayList<>();
+        if (things != null) {
+            for (final Object x : things) {
+                all.add(x);
+            }
+        }
+        if (reveal != null && reveal.getCards() != null) {
+            all.addAll(reveal.getCards());
+        }
+        final JsonArray shown = view.shown(all);
+        if (!shown.isEmpty()) {
+            o.add("shown", shown);
+        }
+        return o;
+    }
+
     private static JsonObject question(final String message) {
         final JsonObject o = new JsonObject();
         o.addProperty("message", message);
@@ -1297,6 +1328,9 @@ public class JsonGuiGame extends AbstractGuiGame {
         final JsonObject o = question(question);
         o.add("card", JsonView.id(c));
         o.add("options", options(options, null));
+        if (c != null) {
+            withShown(o, List.of(c), null);
+        }
         return ask("confirm", o, new JsonPrimitive(defaultIsYes)).getAsBoolean();
     }
 
@@ -1339,12 +1373,14 @@ public class JsonGuiGame extends AbstractGuiGame {
         final JsonObject o = question(message);
         if (min < 0 && max < 0) {       // nothing to choose: Forge only shows these (AbstractGuiGame.reveal)
             o.add("options", options(choices, display));
+            withShown(o, choices, null);
             ask("reveal", o, new JsonArray());
             return new ArrayList<>();
         }
         o.addProperty("min", min);
         o.addProperty("max", max);
         o.add("options", options(choices, display));
+        withShown(o, choices, null);
         if (selected != null && !selected.isEmpty()) {
             final JsonArray chosen = new JsonArray();
             for (final T x : selected) {
@@ -1401,6 +1437,7 @@ public class JsonGuiGame extends AbstractGuiGame {
         o.addProperty("leave_min", remainingObjectsMin);
         o.addProperty("leave_max", remainingObjectsMax);
         o.add("options", options(sourceChoices, null));
+        withShown(o, sourceChoices, null);
         o.add("card", JsonView.id(referenceCard));
         // the default: everything, in the order given (leaving behind what must be left)
         final int take = Math.max(0, sourceChoices.size() - Math.max(0, remainingObjectsMin));
@@ -1427,6 +1464,7 @@ public class JsonGuiGame extends AbstractGuiGame {
         o.addProperty("min", isOptional ? 0 : 1);
         o.addProperty("max", 1);
         o.add("options", options(optionList, null));
+        withShown(o, optionList, delayedReveal);
         final List<? extends GameEntityView> got = pick(optionList, ask("choose", o, indexes(0, isOptional ? 0 : 1)));
         return got.isEmpty() ? null : got.get(0);
     }
@@ -1441,6 +1479,7 @@ public class JsonGuiGame extends AbstractGuiGame {
         o.addProperty("min", min);
         o.addProperty("max", max);
         o.add("options", options(optionList, null));
+        withShown(o, optionList, delayedReveal);
         final int n = Math.max(0, Math.min(min, optionList.size()));
         return new ArrayList<>(pick(optionList, ask("choose", o, indexes(0, n))));
     }
@@ -1454,6 +1493,7 @@ public class JsonGuiGame extends AbstractGuiGame {
         }
         final JsonObject o = question(title);
         o.add("options", options(all, null));
+        withShown(o, all, null);
         o.add("movable", JsonView.ids(manipulable));
         o.addProperty("to_top", toTop);
         o.addProperty("to_bottom", toBottom);
