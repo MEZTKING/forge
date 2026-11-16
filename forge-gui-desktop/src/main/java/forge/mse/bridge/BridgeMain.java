@@ -26,6 +26,7 @@ import forge.game.player.RegisteredPlayer;
 import forge.gamemodes.match.HostedMatch;
 import forge.gui.GuiBase;
 import forge.gui.control.PlaybackSpeed;
+import forge.gui.interfaces.IGuiGame;
 import forge.localinstance.properties.ForgePreferences.FPref;
 import forge.model.FModel;
 import forge.player.GamePlayerUtil;
@@ -51,6 +52,9 @@ import forge.util.MyRandom;
  * --replay-fast --replay-states N --replay-until TURN[:PHASE] --replay-pause --checkpoints N.
  *
  * --human: the first seat is a person, playing through the table (which must be there: no --no-wait).
+ * --seat2 client: the second seat is a person too, playing through a second line of its own (the port
+ * is printed as "MSE-BRIDGE port N seat 1"; --port2 says which, else the port after --port). Each
+ * line carries that seat's own view: the hidden-card rule holds per seat. --name/--name2 name them.
  * --auto-pay: costs Forge can pay by itself are paid without asking. --stops: the phases at which the
  * person is asked what to do while the stack is empty (Forge's names; "all", "none"; a side left out
  * keeps Forge's own settings). With --speed fast Forge's short waits between phases are left out.
@@ -63,8 +67,10 @@ import forge.util.MyRandom;
  * Exit codes: 0 the game ended, 2 bad arguments or decks, 3 no table came / it left / too slow.
  */
 public final class BridgeMain {
-    private static volatile BridgeWire wire;
-    private static volatile JsonGuiGame gui;
+    private static volatile BridgeWire wire;     // the first seat's line (kept so finish() can find it)
+    private static volatile JsonGuiGame gui;     // the first seat's view: the testing tools and the transcript
+    private static final List<BridgeWire> wires = new ArrayList<>();
+    private static final List<JsonGuiGame> guis = new ArrayList<>();
 
     private BridgeMain() {
     }
@@ -105,8 +111,9 @@ public final class BridgeMain {
         final PlaybackSpeed speed = PlaybackSpeed.valueOf(opt.getOrDefault("speed", "normal").toUpperCase());
         final boolean noWait = opt.containsKey("no-wait") || !opt.containsKey("port");
         final boolean humanPlays = opt.containsKey("human");
-        if (humanPlays && noWait) {
-            usage("--human needs a table: --port, and no --no-wait");
+        final boolean seat2Client = "client".equalsIgnoreCase(opt.getOrDefault("seat2", ""));
+        if ((humanPlays || seat2Client) && noWait) {
+            usage("--human or --seat2 client needs a table: --port, and no --no-wait");
         }
         final String name = opt.getOrDefault("name", "You");
 
@@ -117,18 +124,30 @@ public final class BridgeMain {
         Thread.setDefaultUncaughtExceptionHandler((t, ex) -> {
             System.err.println("Uncaught exception in thread " + t.getName() + ":");
             ex.printStackTrace();
-            final JsonGuiGame g = gui;
-            if (g != null) {
+            for (final JsonGuiGame g : guis) {
                 g.error("Forge stopped in " + t.getName() + ": " + ex);
             }
         });
 
-        // the socket first: a port that's taken should say so before Forge takes its half minute to load
-        wire = new BridgeWire(opt.containsKey("port") ? Integer.parseInt(opt.get("port")) : -1,
-                opt.containsKey("out") ? Paths.get(opt.get("out")) : null);
+        // the sockets first: a port that's taken should say so before Forge takes its half minute to load
+        final Path out = opt.containsKey("out") ? Paths.get(opt.get("out")) : null;
+        final int port0 = opt.containsKey("port") ? Integer.parseInt(opt.get("port")) : -1;
+        wire = new BridgeWire(port0, out);
+        wires.add(wire);
         if (wire.getPort() >= 0) {
             System.out.println("MSE-BRIDGE port " + wire.getPort());
             System.out.flush();
+        }
+        if (seat2Client) {       // the second seat plays through its own line, like the first
+            final int port1 = opt.containsKey("port2") ? Integer.parseInt(opt.get("port2"))
+                    : port0 > 0 ? port0 + 1 : port0;
+            final BridgeWire secondWire = new BridgeWire(port1,
+                    out == null ? null : Paths.get(out + ".seat1.jsonl"));
+            wires.add(secondWire);
+            if (secondWire.getPort() >= 0) {
+                System.out.println("MSE-BRIDGE port " + secondWire.getPort() + " seat 1");
+                System.out.flush();
+            }
         }
 
         final BridgeGui base = new BridgeGui();
@@ -245,6 +264,7 @@ public final class BridgeMain {
         }
         final List<RegisteredPlayer> players = new ArrayList<>();
         final List<String> names = new ArrayList<>();
+        int aiSeat = 0;
         for (int i = 0; i < seats; i++) {
             // more seats than decks: the opponents' decks again, in turn
             final Deck d = i < decks.size() ? decks.get(i) : decks.get(1 + (i - 1) % (decks.size() - 1));
@@ -262,6 +282,14 @@ public final class BridgeMain {
                 person.setName(name);
                 rp.setPlayer(person);
                 names.add(name);
+            } else if (seat2Client && i == 1) {
+                // the second seat is a person too, but its window is the second line's JsonGuiGame
+                final String name2 = opt.getOrDefault("name2", d.getName());
+                final forge.LobbyPlayer person = new forge.player.LobbyPlayerHuman(name2);
+                person.setAvatarIndex(i);
+                person.setSleeveIndex(0);
+                rp.setPlayer(person);
+                names.add(name2);
             } else {
                 String aiName = d.getName();
                 for (int n = 2; names.contains(aiName); n++) {
@@ -270,7 +298,7 @@ public final class BridgeMain {
                 names.add(aiName);
                 BridgeAi.Mode mode = o.solo && i > 0 ? BridgeAi.Mode.PASSIVE : BridgeAi.Mode.NORMAL;
                 try {       // --ai-mode and --ai-profile count the AI seats: the first is the first opponent
-                    final int nth = humanPlays ? i - 1 : i;
+                    final int nth = aiSeat++;
                     if (!o.aiModes.isEmpty()) {
                         mode = BridgeAi.Mode.parse(BridgeOptions.forSeat(o.aiModes, nth, "normal"));
                     }
@@ -301,12 +329,34 @@ public final class BridgeMain {
                 }
         }
 
-        gui = new JsonGuiGame(wire, seed, speed, o);
-        base.setGui(gui);
+        // one view per client seat: Forge sets each human seat's window from this map (as its network
+        // play does), so each seat gets its own stream, filtered for that seat alone
+        final Map<RegisteredPlayer, IGuiGame> guisBySeat = new HashMap<>();
         final CountDownLatch over = new CountDownLatch(1);
         if (humanPlays) {
-            gui.setInteractive(true);
-            gui.setAutoPay(opt.containsKey("auto-pay"));
+            gui = new JsonGuiGame(wires.get(0), seed, speed, o, 0, true);
+            guis.add(gui);
+            guisBySeat.put(players.get(0), gui);
+        }
+        if (seat2Client) {
+            final JsonGuiGame second = new JsonGuiGame(wires.get(1), seed, speed, o, 1, gui == null);
+            guis.add(second);
+            guisBySeat.put(players.get(1), second);
+            if (gui == null) {
+                gui = second;       // only the second seat has a person: it owns the tools and the transcript
+            }
+        }
+        if (gui == null) {
+            // no person at the table: HostedMatch asks BridgeGui for a window and registers it as a spectator
+            gui = new JsonGuiGame(wire, seed, speed, o, 0, true);
+            guis.add(gui);
+        }
+        base.setGui(gui);
+        if (!guisBySeat.isEmpty()) {
+            for (final JsonGuiGame g : guis) {
+                g.setInteractive(true);
+                g.setAutoPay(opt.containsKey("auto-pay"));
+            }
             gui.setOnGameOver(over::countDown);     // nobody clicks Forge's own "quit" after the game
             if (opt.containsKey("stops")) {
                 try {
@@ -333,17 +383,22 @@ public final class BridgeMain {
                 }
             }
         }
-        wire.setOnDisconnect(() -> {
-            System.out.println("MSE-BRIDGE the table left");
-            finish(gui.isGameOverSent() ? 0 : 3);
-        });
-        wire.start();
+        for (final BridgeWire w : wires) {
+            w.setOnDisconnect(() -> {
+                System.out.println("MSE-BRIDGE the table left");
+                finish(gui.isGameOverSent() ? 0 : 3);
+            });
+            w.start();
+        }
         if (!noWait) {
             System.out.println("MSE-BRIDGE ready");
             System.out.flush();
-            if (!wire.awaitClient(Long.parseLong(opt.getOrDefault("wait", "120")))) {
-                System.out.println("MSE-BRIDGE no table connected");
-                finish(3);
+            final long wait = Long.parseLong(opt.getOrDefault("wait", "120"));
+            for (final BridgeWire w : wires) {
+                if (!w.awaitClient(wait)) {
+                    System.out.println("MSE-BRIDGE no table connected");
+                    finish(3);
+                }
             }
         }
 
@@ -353,10 +408,9 @@ public final class BridgeMain {
         if (gui.hasStart()) {       // poison, counters, a starting board: set up just before the first turn
             match.setStartGameHook(gui::applyStart);
         }
-        if (humanPlays) {
-            match.startMatch(rules, null, players, players.get(0), gui);
+        if (!guisBySeat.isEmpty()) {
+            match.startMatch(rules, null, players, guisBySeat, null);
         } else {
-            // no person at the table: HostedMatch asks BridgeGui for a window and registers it as a spectator
             match.startMatch(rules, null, players, (RegisteredPlayer) null, null);
         }
 
@@ -368,7 +422,9 @@ public final class BridgeMain {
                 late.add("winner", JsonNull.INSTANCE);
                 late.addProperty("draw", true);
                 late.addProperty("reason", "Timeout");
-                wire.send(late);
+                for (final BridgeWire w : wires) {       // every seat hears the game is over
+                    w.send(late);
+                }
                 System.out.println("MSE-BRIDGE the game took more than " + timeout + " seconds");
                 finish(3);
             }
@@ -379,14 +435,12 @@ public final class BridgeMain {
         finish(0);
     }
 
-    /** Sends what's still queued, closes the line and ends the program. */
+    /** Sends what's still queued, closes the lines and ends the program. */
     public static void finish(final int code) {
-        final JsonGuiGame g = gui;
-        if (g != null) {
+        for (final JsonGuiGame g : guis) {
             g.releaseQuestions();
         }
-        final BridgeWire w = wire;
-        if (w != null) {
+        for (final BridgeWire w : wires) {
             w.close();
         }
         System.out.flush();
@@ -398,7 +452,8 @@ public final class BridgeMain {
         System.err.println("java -cp forge.jar forge.mse.bridge.BridgeMain --port N --profile forge.profile.properties"
                 + " --me deck.dck --ai deck.dck [--seed S] [--out game.jsonl] [--speed fast|normal|slow]"
                 + " [--format Commander] [--life N] [--no-wait] [--wait SECONDS] [--timeout SECONDS]"
-                + " [--human] [--name NAME] [--auto-pay] [--stops \"mine=MAIN1,MAIN2;theirs=END_OF_TURN\"]\n"
+                + " [--human] [--seat2 client] [--name NAME] [--name2 NAME] [--port2 N]"
+                + " [--auto-pay] [--stops \"mine=MAIN1,MAIN2;theirs=END_OF_TURN\"]\n"
                 + "testing: [--testing] [--life A,B,C,D] [--first me|opponent|random|SEAT]"
                 + " [--mulligan london|vancouver|paris|original|houston|none|keep] [--hand-size N] [--poison A,B]"
                 + " [--counters \"ENERGY=3+EXPERIENCE=1,POISON=2\"] [--players 2-4] [--ai more.dck]…"

@@ -121,11 +121,13 @@ import forge.util.Localizer;
  * </ul>
  */
 public class JsonGuiGame extends AbstractGuiGame {
-    public static final int PROTOCOL = 1;
+    public static final int PROTOCOL = 2;
 
     private final BridgeWire wire;
     private final long seed;
     private final PlaybackSpeed wantedSpeed;
+    private final int seatIndex;                        // which seat this window belongs to (0: the table's)
+    private final boolean tools;                        // the testing tools, checkpoints and transcript are its
     private volatile boolean interactive = false;
 
     private volatile Game game;
@@ -191,14 +193,26 @@ public class JsonGuiGame extends AbstractGuiGame {
     private record AbilityChoice(int card, int count) { }
 
     public JsonGuiGame(final BridgeWire wire0, final long seed0, final PlaybackSpeed speed) {
-        this(wire0, seed0, speed, new BridgeOptions());
+        this(wire0, seed0, speed, new BridgeOptions(), 0, true);
     }
 
     public JsonGuiGame(final BridgeWire wire0, final long seed0, final PlaybackSpeed speed, final BridgeOptions options0) {
+        this(wire0, seed0, speed, options0, 0, true);
+    }
+
+    /**
+     * One client seat's window. `seatIndex0`: which seat it is (0 = the table's own seat, 1 = the second
+     * seat). `tools0`: this window owns the testing tools, the checkpoints and the transcript – only the
+     * first client seat does; a second seat gets its state, prompts and clicks and nothing else.
+     */
+    public JsonGuiGame(final BridgeWire wire0, final long seed0, final PlaybackSpeed speed, final BridgeOptions options0,
+            final int seatIndex0, final boolean tools0) {
         wire = wire0;
         seed = seed0;
         wantedSpeed = speed;
         options = options0;
+        seatIndex = seatIndex0;
+        tools = tools0;
         dev = new DevTools(this, wire0, options0);
         showAll = options0.showOpponentHand;
         aiLog = options0.aiLog;
@@ -302,14 +316,18 @@ public class JsonGuiGame extends AbstractGuiGame {
         final PlayerView me = myPlayers == null || myPlayers.isEmpty() ? null : myPlayers.get(0);
         viewer = me;
         view = new JsonView(me, showAll);
-        dev.setGame(g);
+        if (tools) {
+            dev.setGame(g);
+        }
         if (options.handSize >= 0) {        // Forge takes the opening hand's size for the most cards a hand may hold too
             for (final Player p : g.getPlayers()) {
                 p.setMaxHandSize(7);
             }
         }
-        BridgeAi.setLog(this::aiSays);
-        BridgeAi.setPause(this::pauseBeforeAi);
+        if (tools) {        // the AI's own lines and pauses belong to the table's seat
+            BridgeAi.setLog(this::aiSays);
+            BridgeAi.setPause(this::pauseBeforeAi);
+        }
         logSent = 0;
         lastState = "";
         gameOverSent = false;
@@ -333,6 +351,8 @@ public class JsonGuiGame extends AbstractGuiGame {
         o.addProperty("forge", forge.gui.GuiBase.getInterface().getCurrentVersion());
         final PlayerView me = getCurrentPlayer();
         o.add("me", JsonView.id(me));
+        o.add("seat", JsonView.id(me));         // the seat this line is for (null: a watcher)
+        o.addProperty("seat_index", seatIndex);
         o.addProperty("watching", me == null);
         o.addProperty("game_type", g.getRules().getGameType().name());
         o.addProperty("title", getGameView().getTitle());
@@ -381,10 +401,12 @@ public class JsonGuiGame extends AbstractGuiGame {
     @Subscribe
     public void onGameEvent(final GameEvent ev) {
         try {
-            if (ev instanceof GameEventPlayerPriority) {
-                dev.atPriority();       // the game is at rest: the testing tools' turn
+            if (tools) {
+                if (ev instanceof GameEventPlayerPriority) {
+                    dev.atPriority();       // the game is at rest: the testing tools' turn
+                }
+                dev.onEvent(ev);
             }
-            dev.onEvent(ev);
             if (ev instanceof GameEventCardTapped e) {
                 changed(Collections.singleton(e.card()));
             } else if (ev instanceof GameEventCardCounters e) {
@@ -557,12 +579,14 @@ public class JsonGuiGame extends AbstractGuiGame {
 
     /** True when something is to be set up before the first turn (BridgeMain gives Forge the hook for it). */
     public boolean hasStart() {
-        return dev.hasStart();
+        return tools && dev.hasStart();
     }
 
     /** Forge's start hook, on the game thread. */
     public void applyStart() {
-        dev.applyStart();
+        if (tools) {
+            dev.applyStart();
+        }
     }
 
     /** The testing tools changed the game: the next `state` has it. */
@@ -616,6 +640,10 @@ public class JsonGuiGame extends AbstractGuiGame {
      * (that prompt is ended without an action, as Forge's undo does, and asked again afterwards).
      */
     private void dev(final JsonObject m) {
+        if (!tools) {       // the testing tools belong to the table's own seat
+            error("The testing tools belong to the first seat.");
+            return;
+        }
         if (!m.has("op") && "export_state".equals(m.get("t").getAsString())) {
             m.addProperty("op", "export_state");
         }
@@ -784,7 +812,9 @@ public class JsonGuiGame extends AbstractGuiGame {
                 dev(m);
                 break;
             case "replay_done":     // the table has caught up (--replay-fast): states are sent again
-                caughtUp();
+                if (tools) {
+                    caughtUp();
+                }
                 break;
             case "quit":
                 BridgeMain.finish(0);
@@ -1014,6 +1044,7 @@ public class JsonGuiGame extends AbstractGuiGame {
             }
             o.addProperty("id", inputPromptId);
             o.addProperty("kind", "watch");
+            o.add("seat", JsonView.id(getCurrentPlayer()));
             o.addProperty("wait", false);
             o.add("player", promptPlayer);
             o.addProperty("message", promptMessage);
@@ -1152,6 +1183,7 @@ public class JsonGuiGame extends AbstractGuiGame {
                         && okLabel.equals(Localizer.getInstance().getMessage("lblAuto"));
                 o.addProperty("id", inputPromptId);
                 o.addProperty("kind", kind);
+                o.add("seat", in == null ? JsonView.id(getCurrentPlayer()) : JsonView.id(in.getOwner()));
                 o.addProperty("wait", in != null && !busy && !press);
                 o.addProperty("reply", "click");
                 o.addProperty("input", in == null ? null : className(in));
@@ -1394,6 +1426,7 @@ public class JsonGuiGame extends AbstractGuiGame {
         body.addProperty("t", "prompt");
         body.addProperty("id", id);
         body.addProperty("kind", kind);
+        body.add("seat", JsonView.id(getCurrentPlayer()));      // whose question this is
         body.addProperty("wait", interactive && !gameOverSent);
         body.addProperty("reply", "answer");
         body.add("default", fallback);
