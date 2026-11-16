@@ -1,4 +1,4 @@
-package forge.view;
+package forge.mse.host;
 
 import java.io.File;
 import java.util.*;
@@ -35,7 +35,22 @@ import forge.util.TextUtil;
 import forge.util.WordUtil;
 import forge.util.storage.IStorage;
 
-public class SimulateMatch {
+public class Simulate {
+    public static void main(String[] args) {
+        if (forge.gui.GuiBase.getInterface() == null) {
+            forge.gui.GuiBase.setInterface(new HeadlessGui());
+        }
+        final String[] full = args.length > 0 && "sim".equals(args[0]) ? args : prependSim(args);
+        simulate(full);
+    }
+
+    private static String[] prependSim(String[] args) {
+        final String[] out = new String[args.length + 1];
+        out[0] = "sim";
+        System.arraycopy(args, 0, out, 1, args.length);
+        return out;
+    }
+
     public static void simulate(String[] args) {
         FModel.initialize(null, null);
 

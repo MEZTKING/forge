@@ -4,8 +4,8 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-import forge.GuiDesktop;
 import forge.gui.interfaces.IGuiGame;
+import forge.mse.host.HeadlessGui;
 import forge.localinstance.skin.FSkinProp;
 import forge.util.FSerializableFunction;
 
@@ -13,7 +13,7 @@ import forge.util.FSerializableFunction;
  * Forge's desktop interface with its game window swapped for the bridge: a game Forge would
  * open a window for gets the {@link JsonGuiGame} instead, and nothing here opens a dialog.
  */
-public class BridgeGui extends GuiDesktop {
+public class BridgeGui extends HeadlessGui {
     private volatile JsonGuiGame gui;
 
     public void setGui(final JsonGuiGame gui0) {
