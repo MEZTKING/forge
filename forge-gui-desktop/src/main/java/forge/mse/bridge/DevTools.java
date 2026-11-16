@@ -30,6 +30,7 @@ import forge.card.mana.ManaAtom;
 import forge.game.Game;
 import forge.game.GameEndReason;
 import forge.game.GameEntity;
+import forge.game.GameEntityCounterTable;
 import forge.game.GameState;
 import forge.game.ability.AbilityKey;
 import forge.game.card.Card;
@@ -541,7 +542,19 @@ final class DevTools {
         }
         final int to = Math.max(0, want);
         if (on instanceof Player p) {
-            p.setCounters(type, to, p, true);
+            // A dev addition is a real addition: its triggers fire (a poison counter draws Maomao's card, etc.).
+            // setCounters would move the number silently. The counter table is what a real action passes; its
+            // entries are what CounterAddedAll looks at.
+            final int delta = to - now;
+            if (delta > 0) {
+                final GameEntityCounterTable table = new GameEntityCounterTable();
+                // addCounter only records in the table (it waits for an action's replacement effect): for a
+                // testing action there is no action, so add them for real, then let the table's triggers run.
+                p.addCounterInternal(type, delta, p, true, table, null);
+                table.triggerCountersPutAll(g);
+            } else if (delta < 0) {
+                p.subtractCounter(type, -delta, p);
+            }
         } else if (on instanceof Card c) {
             if (to > now) {
                 c.addCounterInternal(type, to - now, c.getController(), false, null, null);
@@ -1252,7 +1265,22 @@ final class DevTools {
         } catch (final NumberFormatException e) {
             throw new IllegalArgumentException("This needs a card's id (a number), not " + m.get("card") + ".");
         }
-        final Card c = g.findById(id);
+        Card c = g.findById(id);
+        if (c == null) {
+            // The Bag is Forge's sideboard, which findById leaves out (it is "outside the game"): a dev
+            // action must still be able to name a card there (move_card from the Bag, for instance).
+            for (final Player p : g.getPlayers()) {
+                for (final Card inBag : p.getCardsIn(ZoneType.Sideboard)) {
+                    if (inBag.getId() == id) {
+                        c = inBag;
+                        break;
+                    }
+                }
+                if (c != null) {
+                    break;
+                }
+            }
+        }
         if (c == null) {
             throw new IllegalArgumentException("Card " + id + " isn't in the game.");
         }
