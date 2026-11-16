@@ -95,10 +95,6 @@ public class ViewWinLose implements IWinLoseView<FButton> {
             case Sealed:
                 control = new LimitedWinLose(this, game0, matchUI);
                 break;
-            case CommanderGauntlet:
-            case Gauntlet:
-                control = new GauntletWinLose(this, game0, matchUI);
-                break;
             default: // will catch it after switch
                 break;
         }

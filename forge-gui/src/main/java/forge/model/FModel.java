@@ -33,7 +33,6 @@ import forge.game.GameFormat;
 import forge.game.GameType;
 import forge.game.card.CardUtil;
 import forge.game.spellability.Spell;
-import forge.gamemodes.gauntlet.GauntletData;
 import forge.gui.GuiBase;
 import forge.gui.download.CdnUuidCache;
 import forge.gamemodes.limited.GauntletMini;
@@ -115,7 +114,6 @@ public final class FModel {
 
     // Someone should take care of 2 gauntlets here
     private static TournamentData tournamentData;
-    private static GauntletData gauntletData;
     private static final Supplier<GauntletMini> gauntletMini = Suppliers.memoize(GauntletMini::new);
 
     private static final Supplier<QuestController> quest = Suppliers.memoize(QuestController::new);
@@ -422,14 +420,6 @@ public final class FModel {
 
     public static IStorage<CardBlock> getBlocks() {
         return blocks.get();
-    }
-
-    public static GauntletData getGauntletData() {
-        return gauntletData;
-    }
-
-    public static void setGauntletData(final GauntletData data0) {
-        gauntletData = data0;
     }
 
     public static GauntletMini getGauntletMini() {

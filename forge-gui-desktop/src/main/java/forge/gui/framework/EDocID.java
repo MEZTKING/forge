@@ -10,7 +10,6 @@ import com.google.common.collect.ObjectArrays;
 
 import forge.game.zone.ZoneType;
 import forge.screens.deckeditor.views.*;
-import forge.screens.home.gauntlet.*;
 import forge.screens.home.online.VSubmenuOnlineDecks;
 import forge.screens.home.online.VSubmenuOnlineLobby;
 import forge.screens.home.puzzle.VSubmenuPuzzleCreate;
@@ -69,12 +68,6 @@ public enum EDocID {
     HOME_QUESTDUELS (VSubmenuDuels.SINGLETON_INSTANCE),
     HOME_QUESTDECKS (VSubmenuQuestDecks.SINGLETON_INSTANCE),
     HOME_QUESTPREFS (VSubmenuQuestPrefs.SINGLETON_INSTANCE),
-    HOME_GAUNTLETBUILD (VSubmenuGauntletBuild.SINGLETON_INSTANCE),
-    HOME_GAUNTLETLOAD (VSubmenuGauntletLoad.SINGLETON_INSTANCE),
-    HOME_GAUNTLETQUICK (VSubmenuGauntletQuick.SINGLETON_INSTANCE),
-    HOME_GAUNTLETCOMMANDERQUICK (VSubmenuGauntletCommanderQuick.SINGLETON_INSTANCE),
-    HOME_GAUNTLETCOMMANDERBUILD (VSubmenuGauntletCommanderBuild.SINGLETON_INSTANCE),
-    HOME_GAUNTLETCONTESTS (VSubmenuGauntletContests.SINGLETON_INSTANCE),
     HOME_PREFERENCES (VSubmenuPreferences.SINGLETON_INSTANCE),
     HOME_ACHIEVEMENTS (VSubmenuAchievements.SINGLETON_INSTANCE),
     HOME_AVATARS (VSubmenuAvatars.SINGLETON_INSTANCE),

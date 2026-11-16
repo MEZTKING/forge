@@ -12,7 +12,6 @@ public enum EMenuGroup {
     ONLINE ("lblOnlineMultiplayer"),
     QUEST ("lblQuests"),
     PUZZLE ("lblPuzzles"),
-    GAUNTLET ("lblGauntlets"),
     SETTINGS ("lblGameSettings");
 
     private final String strTitle;
