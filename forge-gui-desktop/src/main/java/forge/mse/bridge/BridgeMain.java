@@ -353,9 +353,11 @@ public final class BridgeMain {
         }
         base.setGui(gui);
         if (!guisBySeat.isEmpty()) {
-            for (final JsonGuiGame g : guis) {
+            for (int i = 0; i < guis.size(); i++) {
+                final JsonGuiGame g = guis.get(i);
                 g.setInteractive(true);
-                g.setAutoPay(opt.containsKey("auto-pay"));
+                // the second client seat is the AI service's (MSE Play's pilot): Forge pays its mana itself
+                g.setAutoPay(i == 0 ? opt.containsKey("auto-pay") : true);
             }
             gui.setOnGameOver(over::countDown);     // nobody clicks Forge's own "quit" after the game
             if (opt.containsKey("stops")) {
@@ -375,7 +377,9 @@ public final class BridgeMain {
                             usage("--stops: mine=… or theirs=…, not " + kv[0]);
                         }
                     }
-                    gui.setStops(mine, theirs);
+                    for (final JsonGuiGame g : guis) {      // both client seats: fewer questions, less cost
+                        g.setStops(mine, theirs);
+                    }
                 } catch (final IllegalArgumentException e) {
                     usage("--stops: " + e.getMessage() + " isn't a phase (UPKEEP, DRAW, MAIN1, COMBAT_BEGIN, "
                             + "COMBAT_DECLARE_ATTACKERS, COMBAT_DECLARE_BLOCKERS, COMBAT_FIRST_STRIKE_DAMAGE, COMBAT_DAMAGE, "
