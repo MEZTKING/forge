@@ -38,10 +38,6 @@ import forge.gui.GuiBase;
 import forge.gui.download.CdnUuidCache;
 import forge.gamemodes.limited.GauntletMini;
 import forge.gamemodes.limited.ThemedChaosDraft;
-import forge.gamemodes.planarconquest.ConquestController;
-import forge.gamemodes.planarconquest.ConquestPlane;
-import forge.gamemodes.planarconquest.ConquestPreferences;
-import forge.gamemodes.planarconquest.ConquestUtil;
 import forge.gamemodes.quest.QuestController;
 import forge.gamemodes.quest.QuestWorld;
 import forge.gamemodes.quest.data.QuestPreferences;
@@ -103,11 +99,6 @@ public final class FModel {
     }
 
     private static final Supplier<QuestPreferences> questPreferences = Suppliers.memoize(QuestPreferences::new);
-    private static final Supplier<ConquestPreferences> conquestPreferences = Suppliers.memoize(() -> {
-       final ConquestPreferences cp = new ConquestPreferences();
-       ConquestUtil.updateRarityFilterOdds(cp);
-       return cp;
-    });
     private static final Supplier<ForgePreferences> preferences = Suppliers.memoize(ForgePreferences::new);
     private static final Supplier<ForgeNetPreferences> netPreferences = Suppliers.memoize(ForgeNetPreferences::new);
     private static final Supplier<Map<GameType, AchievementCollection>> achievements = Suppliers.memoize(() -> {
@@ -128,7 +119,6 @@ public final class FModel {
     private static final Supplier<GauntletMini> gauntletMini = Suppliers.memoize(GauntletMini::new);
 
     private static final Supplier<QuestController> quest = Suppliers.memoize(QuestController::new);
-    private static final Supplier<ConquestController> conquest = Suppliers.memoize(ConquestController::new);
     private static final Supplier<CardCollections> decks = Suppliers.memoize(CardCollections::new);
 
     private static final Supplier<IStorage<CardBlock>> blocks = Suppliers.memoize(
@@ -136,7 +126,6 @@ public final class FModel {
                     ForgeConstants.BLOCK_DATA_DIR + "blocks.txt", getMagicDb().getEditions())));
     private static final Supplier<IStorage<CardBlock>> fantasyBlocks = Suppliers.memoize(() -> new StorageBase<>("Custom blocks", new CardBlock.Reader(ForgeConstants.BLOCK_DATA_DIR + "fantasyblocks.txt", getMagicDb().getEditions())));
     private static final Supplier<IStorage<ThemedChaosDraft>> themedChaosDrafts = Suppliers.memoize(() -> new StorageBase<>("Themed Chaos Drafts", new ThemedChaosDraft.Reader(ForgeConstants.BLOCK_DATA_DIR + "chaosdraftthemes.txt")));
-    private static final Supplier<IStorage<ConquestPlane>> planes = Suppliers.memoize(() -> new StorageBase<>("Conquest planes", new ConquestPlane.Reader(ForgeConstants.CONQUEST_PLANES_DIR + "planes.txt")));
     private static final Supplier<IStorage<QuestWorld>> worlds = Suppliers.memoize(() -> {
         final Map<String, QuestWorld> standardWorlds = new QuestWorld.Reader(ForgeConstants.QUEST_WORLD_DIR + "worlds.txt").readAll();
         final Map<String, QuestWorld> customWorlds = new QuestWorld.Reader(ForgeConstants.USER_QUEST_WORLD_DIR + "customworlds.txt").readAll();
@@ -324,10 +313,6 @@ public final class FModel {
         return quest.get();
     }
 
-    public static ConquestController getConquest() {
-        return conquest.get();
-    }
-
     public static ItemPool<PaperCard> getAllCards() {
         return allCards.get();
     }
@@ -424,9 +409,6 @@ public final class FModel {
     public static QuestPreferences getQuestPreferences() {
         return questPreferences.get();
     }
-    public static ConquestPreferences getConquestPreferences() {
-        return conquestPreferences.get();
-    }
 
     public static AchievementCollection getAchievements(GameType gameType) {
         // Translate gameType to appropriate type if needed
@@ -456,10 +438,6 @@ public final class FModel {
 
     public static CardCollections getDecks() {
         return decks.get();
-    }
-
-    public static IStorage<ConquestPlane> getPlanes() {
-        return planes.get();
     }
 
     public static IStorage<QuestWorld> getWorlds() {
