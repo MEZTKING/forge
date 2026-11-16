@@ -349,6 +349,8 @@ public class JsonGuiGame extends AbstractGuiGame {
         final JsonObject o = msg("hello");
         o.addProperty("version", PROTOCOL);
         o.addProperty("forge", forge.gui.GuiBase.getInterface().getCurrentVersion());
+        o.addProperty("engine", forge.mse.EngineVersion.ENGINE);          // our own version (additive)
+        o.addProperty("engine_base", forge.mse.EngineVersion.BASE);       // the upstream commit it started from
         final PlayerView me = getCurrentPlayer();
         o.add("me", JsonView.id(me));
         o.add("seat", JsonView.id(me));         // the seat this line is for (null: a watcher)
