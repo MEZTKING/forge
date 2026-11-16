@@ -43,10 +43,14 @@ Nothing is deleted on GitHub without the owner's agreement.
 
 ## Upstream's workflows
 
-Upstream's `.github/workflows/` in this fork still build Android, iOS and its wiki; they cost minutes and
-do not belong to MSE Studio's engine. Turning them off is a repository setting, so it is **listed for the
-owner** and done only with their agreement (candidates: `publish-android`, `remove-stale-branches`,
-`snapshots-*`, `stale`, `sync-wiki`, `test-android-build`, `test-maven-settings`, `ios-*`, `maven-publish`).
+Upstream's `.github/workflows/` files are still in the mirror, but **the fork runs none of them**: on
+16 November 2026 GitHub's API lists no workflows at all for `MEZTKING/forge` (Actions is enabled, nothing is
+registered – a fork's inherited workflows are inactive), and a direct request to disable one answers 404.
+Nothing is costing minutes. If GitHub ever registers one, turn it off in **Settings → Actions → Workflows**;
+the candidates are `publish-android`, `remove-stale-branches`, `snapshots-*`, `stale`, `sync-wiki`,
+`test-android-build`, `test-maven-settings`, `ios-*` and `maven-publish` (keep `mtg-fetch-cards` if it is
+wanted for card data). The owner approved turning them off on 16 November 2026; there was nothing left to
+turn off.
 
 ## Notice
 
