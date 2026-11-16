@@ -1,4 +1,0 @@
-org.tinylog.throwable.DropCauseThrowableFilter
-org.tinylog.throwable.KeepThrowableFilter
-org.tinylog.throwable.StripThrowableFilter
-org.tinylog.throwable.UnpackThrowableFilter
