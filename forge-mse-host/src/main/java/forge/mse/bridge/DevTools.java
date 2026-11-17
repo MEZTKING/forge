@@ -9,6 +9,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
@@ -1156,6 +1157,7 @@ final class DevTools {
             o.add("active", ph.getPlayerTurn() == null ? null : new com.google.gson.JsonPrimitive(ph.getPlayerTurn().getId()));
             o.addProperty("tick", tick);
             o.addProperty("hash", hash(g));
+            o.addProperty("chash", canonicalHash(g));
             wire.send(o);
         } catch (final RuntimeException e) {
             gui.error("The bridge couldn't make a checkpoint: " + e);
@@ -1191,6 +1193,59 @@ final class DevTools {
         sb.append("\nS=");
         for (final SpellAbilityStackInstance si : g.getStack()) {
             sb.append(si.getSourceCard() == null ? -1 : si.getSourceCard().getId()).append(',');
+        }
+        try {
+            final byte[] d = MessageDigest.getInstance("SHA-256").digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+            final StringBuilder hex = new StringBuilder();
+            for (int i = 0; i < 8; i++) {
+                hex.append(String.format("%02x", d[i]));
+            }
+            return hex.toString();
+        } catch (final NoSuchAlgorithmException e) {
+            return Integer.toHexString(sb.toString().hashCode());
+        }
+    }
+
+    /**
+     * The same game said in names, not card ids (P3-C): a refactor that makes the same cards in another
+     * order changes {@link #hash} but not this one. The library is only its size and a face-down card is
+     * only "face-down", so a checkpoint gives nothing away.
+     */
+    static String canonicalHash(final Game g) {
+        final StringBuilder sb = new StringBuilder();
+        final PhaseHandler ph = g.getPhaseHandler();
+        sb.append(ph.getTurn()).append('|').append(ph.getPhase()).append('|')
+                .append(ph.getPlayerTurn() == null ? -1 : ph.getPlayerTurn().getId());
+        for (final Player p : g.getRegisteredPlayers()) {
+            sb.append("\nP").append(p.getId()).append(':').append(p.getLife()).append(':')
+                    .append(sorted(p.getCounters())).append(':').append(p.hasLost());
+            for (final ZoneType zone : new ZoneType[] {ZoneType.Hand, ZoneType.Library, ZoneType.Graveyard,
+                    ZoneType.Exile, ZoneType.Command, ZoneType.Battlefield, ZoneType.Sideboard }) {
+                sb.append('\n').append(zone.name()).append('=');
+                if (zone == ZoneType.Library) {
+                    sb.append(p.getCardsIn(zone).size());    // hidden: how many, nothing else
+                    continue;
+                }
+                for (final Card c : p.getCardsIn(zone)) {
+                    sb.append(c.isFaceDown() ? "face-down" : c.getName());
+                    if (zone == ZoneType.Battlefield) {
+                        sb.append(c.isTapped() ? "T" : "").append(sorted(c.getCounters()))
+                                .append('d').append(c.getDamage());
+                        final List<String> attached = new ArrayList<>();
+                        for (final Card a : c.getAttachedCards()) {
+                            attached.add(a.isFaceDown() ? "face-down" : a.getName());
+                        }
+                        Collections.sort(attached);
+                        sb.append('a').append(attached);
+                    }
+                    sb.append(',');
+                }
+            }
+        }
+        sb.append("\nS=");
+        for (final SpellAbilityStackInstance si : g.getStack()) {
+            final Card src = si.getSourceCard();
+            sb.append(src == null ? "?" : (src.isFaceDown() ? "face-down" : src.getName())).append(',');
         }
         try {
             final byte[] d = MessageDigest.getInstance("SHA-256").digest(sb.toString().getBytes(StandardCharsets.UTF_8));
