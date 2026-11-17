@@ -117,7 +117,6 @@ public enum VHomeUI implements IVTopLevelUI {
         allSubmenus.add(VSubmenuConstructed.SINGLETON_INSTANCE);
         allSubmenus.add(VSubmenuDraft.SINGLETON_INSTANCE);
         allSubmenus.add(VSubmenuSealed.SINGLETON_INSTANCE);
-        //allSubmenus.add(VSubmenuWinston.SINGLETON_INSTANCE);
 
         allSubmenus.add(VSubmenuOnlineLobby.SINGLETON_INSTANCE);
         allSubmenus.add(VSubmenuOnlineDecks.SINGLETON_INSTANCE);
