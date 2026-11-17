@@ -41,7 +41,8 @@ public class MyRandom {
         CountingRandom(Random delegate) { super(0); this.delegate = delegate; }
         @Override protected int next(int bits) {
             calls.incrementAndGet();
-            return delegate.nextInt() >>> (32 - bits);
+            final int value = delegate.nextInt() >>> (32 - bits);
+            return RandomLog.take(value);      // recorded / replayed by the decision log (P3-B); no-op when off
         }
         @Override public void setSeed(long seed) {
             if (delegate != null) delegate.setSeed(seed);   // null during super(0)

@@ -108,6 +108,7 @@ public final class BridgeMain {
             usage("--port or --out is needed");
         }
         final long seed = opt.containsKey("seed") ? Long.parseLong(opt.get("seed")) : new Random().nextLong();
+        forge.util.RandomLog.start(opt.get("decisions-out"), opt.get("decisions-in"));    // P3-B: random draws
         final PlaybackSpeed speed = PlaybackSpeed.valueOf(opt.getOrDefault("speed", "normal").toUpperCase());
         final boolean noWait = opt.containsKey("no-wait") || !opt.containsKey("port");
         final boolean humanPlays = opt.containsKey("human");
@@ -441,6 +442,7 @@ public final class BridgeMain {
 
     /** Sends what's still queued, closes the lines and ends the program. */
     public static void finish(final int code) {
+        forge.util.RandomLog.close();
         for (final JsonGuiGame g : guis) {
             g.releaseQuestions();
         }
@@ -457,7 +459,8 @@ public final class BridgeMain {
                 + " --me deck.dck --ai deck.dck [--seed S] [--out game.jsonl] [--speed fast|normal|slow]"
                 + " [--format Commander] [--life N] [--no-wait] [--wait SECONDS] [--timeout SECONDS]"
                 + " [--human] [--seat2 client] [--name NAME] [--name2 NAME] [--port2 N]"
-                + " [--auto-pay] [--stops \"mine=MAIN1,MAIN2;theirs=END_OF_TURN\"]\n"
+                + " [--auto-pay] [--stops \"mine=MAIN1,MAIN2;theirs=END_OF_TURN\"]"
+                + " [--decisions-out FILE] [--decisions-in FILE]\n"
                 + "testing: [--testing] [--life A,B,C,D] [--first me|opponent|random|SEAT]"
                 + " [--mulligan london|vancouver|paris|original|houston|none|keep] [--hand-size N] [--poison A,B]"
                 + " [--counters \"ENERGY=3+EXPERIENCE=1,POISON=2\"] [--players 2-4] [--ai more.dck]…"
