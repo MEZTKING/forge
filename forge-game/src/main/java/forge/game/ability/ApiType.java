@@ -212,6 +212,7 @@ public enum ApiType {
     WinsGame (GameWinEffect.class),
 
     BlankLine (BlankLineEffect.class),
+    Mse (MseEffect.class),
     DamageResolve (DamageResolveEffect.class),
     ChangeZoneResolve (ChangeZoneResolveEffect.class),
     CompanionChoose (CharmEffect.class),
