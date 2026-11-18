@@ -13,6 +13,7 @@ import java.util.Map;
  */
 public enum TriggerType {
     Abandoned(TriggerAbandoned.class),
+    Mse(TriggerMse.class),
     AbilityCast(TriggerSpellAbilityCastOrCopy.class),
     AbilityResolves(TriggerAbilityResolves.class),
     AbilityTriggered(TriggerAbilityTriggered.class),

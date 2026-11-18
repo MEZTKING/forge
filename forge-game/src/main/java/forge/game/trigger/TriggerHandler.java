@@ -397,8 +397,9 @@ public class TriggerHandler {
     }
 
     private boolean canRunTrigger(final Trigger regtrig, final TriggerType mode, final Map<AbilityKey, Object> runParams) {
-        if (regtrig.getMode() != mode) {
-            return false; // Not the right mode.
+        if (regtrig.getMode() != mode
+                && !(regtrig instanceof TriggerMse mse && mse.watches(mode))) {
+            return false; // Not the right mode (an Mse trigger hears the modes its piece names).
         }
 
         if (regtrig.isSuppressed()) {
