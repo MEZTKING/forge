@@ -68,6 +68,9 @@ public enum ZoneType implements ITranslatable {
             return null;
         }
         final String valToCompate = value.trim();
+        if ("Bag".equalsIgnoreCase(valToCompate)) {
+            return Extra;                    // Maomao's Bag is our named extra zone (MseZones)
+        }
         for (final ZoneType v : ZoneType.values()) {
             if (v.name().compareToIgnoreCase(valToCompate) == 0) {
                 return v;

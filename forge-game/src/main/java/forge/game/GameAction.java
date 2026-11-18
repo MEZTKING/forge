@@ -1451,8 +1451,8 @@ public class GameAction {
                 p.checkKeywordCard();
 
                 for (final ZoneType zt : ZoneType.values()) {
-                    if (zt == ZoneType.Battlefield || zt == ZoneType.Flashback) {
-                        continue;
+                    if (zt == ZoneType.Battlefield || zt == ZoneType.Flashback || zt == ZoneType.Extra) {
+                        continue;                 // Extra is our named zones, made only when a rule asks
                     }
                     for (final Card c : p.getCardsIn(zt).threadSafeIterable()) {
                         checkAgain |= stateBasedAction704_5d(c);
@@ -2387,6 +2387,9 @@ public class GameAction {
 
             first = runOpeningHandActions(first);
             checkStateEffects(true); // why?
+
+            // The bag is filled the first time a rule asks for it (MseZones), so a deck that never uses it
+            // behaves exactly as before.
 
             // Run Trigger beginning of the game
             game.getTriggerHandler().runTrigger(TriggerType.NewGame, AbilityKey.newMap(), true);

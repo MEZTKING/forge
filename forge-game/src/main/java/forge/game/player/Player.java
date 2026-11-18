@@ -157,6 +157,7 @@ public class Player extends GameEntity implements Comparable<Player> {
     private final Map<ZoneType, PlayerZone> zones = Maps.newEnumMap(ZoneType.class);
     private List<PlayerZone> extraZones = null;
     private final Map<String, PlayerZone> namedExtraZones = Maps.newHashMap();
+    private boolean bagFilled = false;
 
     private final Map<Long, Integer> adjustLandPlays = Maps.newHashMap();
     private final Set<Long> adjustLandPlaysInfinite = Sets.newHashSet();
@@ -1299,6 +1300,9 @@ public class Player extends GameEntity implements Comparable<Player> {
      * Returns PlayerZone corresponding to the given zone of game.
      */
     public final PlayerZone getZone(final ZoneType zone) {
+        if (zone == ZoneType.Extra) {
+            return forge.game.mse.MseZones.of(this, "bag");   // the default named zone; MseZones names others
+        }
         return zones.get(zone);
     }
     public void updateZoneForView(PlayerZone zone) {
@@ -1333,6 +1337,14 @@ public class Player extends GameEntity implements Comparable<Player> {
     /** The named extra zones that exist (empty when none was asked for). */
     public final Collection<PlayerZone> getNamedExtraZones() {
         return namedExtraZones.values();
+    }
+
+    public final boolean isBagFilled() {
+        return bagFilled;
+    }
+
+    public final void markBagFilled() {
+        bagFilled = true;
     }
 
     public void resetExtraZones(ZoneType type) {

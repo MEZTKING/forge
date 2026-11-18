@@ -1244,6 +1244,18 @@ final class DevTools {
      * order changes {@link #hash} but not this one. The library is only its size and a face-down card is
      * only "face-down", so a checkpoint gives nothing away.
      */
+    /** The cards a zone contributes to the canonical hash; the sideboard counts with our named bag,
+     *  because the bag is filled from it at game start (the same cards, in the same order). */
+    private static forge.game.card.CardCollection cardsForHash(final Player p, final ZoneType zone) {
+        final forge.game.card.CardCollection cards = new forge.game.card.CardCollection(p.getCardsIn(zone));
+        if (zone == ZoneType.Sideboard) {
+            for (final PlayerZone extra : p.getNamedExtraZones()) {
+                cards.addAll(extra.getCards());
+            }
+        }
+        return cards;
+    }
+
     static String canonicalHash(final Game g) {
         final StringBuilder sb = new StringBuilder();
         final PhaseHandler ph = g.getPhaseHandler();
