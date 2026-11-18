@@ -14,6 +14,7 @@ public final class MseRegistry {
     private static final Map<String, MseEffectPiece> EFFECTS = new ConcurrentHashMap<>();
     private static final Map<String, MseTriggerPiece> TRIGGERS = new ConcurrentHashMap<>();
     private static final Map<String, MseReplacementPiece> REPLACEMENTS = new ConcurrentHashMap<>();
+    private static final Map<String, MseStaticPiece> STATICS = new ConcurrentHashMap<>();
     private static volatile boolean loaded;
 
     private MseRegistry() {
@@ -37,6 +38,9 @@ public final class MseRegistry {
             for (final MseReplacementPiece piece : ServiceLoader.load(MseReplacementPiece.class)) {
                 REPLACEMENTS.put(piece.name().toLowerCase(java.util.Locale.ROOT), piece);
             }
+            for (final MseStaticPiece piece : ServiceLoader.load(MseStaticPiece.class)) {
+                STATICS.put(piece.name().toLowerCase(java.util.Locale.ROOT), piece);
+            }
             loaded = true;
         }
     }
@@ -54,6 +58,17 @@ public final class MseRegistry {
     public static void register(final MseReplacementPiece piece) {
         REPLACEMENTS.put(piece.name().toLowerCase(java.util.Locale.ROOT), piece);
         loaded = true;
+    }
+
+    public static void register(final MseStaticPiece piece) {
+        STATICS.put(piece.name().toLowerCase(java.util.Locale.ROOT), piece);
+        loaded = true;
+    }
+
+    /** The continuous static piece a script names, or null. */
+    public static MseStaticPiece staticPiece(final String name) {
+        load();
+        return name == null ? null : STATICS.get(name.toLowerCase(java.util.Locale.ROOT));
     }
 
     /** The replacement a script names, or null. */

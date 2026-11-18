@@ -1085,6 +1085,10 @@ final class DevTools {
                         entry.addProperty("tapped", c.isTapped());
                         entry.addProperty("sick", c.hasSickness());
                         entry.addProperty("token", c.isToken());
+                        if (c.isCreature()) {
+                            entry.addProperty("power", c.getNetPower());
+                            entry.addProperty("toughness", c.getNetToughness());
+                        }
                         entry.add("counters", JsonView.counters(c.getCounters()));
                         cards.add(entry);
                     } else {

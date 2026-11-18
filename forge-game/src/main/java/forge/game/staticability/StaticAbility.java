@@ -256,6 +256,16 @@ public class StaticAbility extends CardTraitBase implements IIdentifiable, Clone
         if (hasParam("Mode")) {
             setMode(StaticAbilityMode.setValueOf(getParam("Mode")));
         }
+        if (mapParams.containsKey("Mse")) {
+            final forge.game.mse.MseStaticPiece piece =
+                    forge.game.mse.MseRegistry.staticPiece(mapParams.get("Mse"));
+            if (piece == null) {
+                throw new RuntimeException("No extension-layer static is registered as \"" + mapParams.get("Mse")
+                        + "\" (the card script asks for it)");
+            }
+            // the piece's standard Continuous parameters count for the layers and the effect alike
+            this.mapParams.putAll(piece.params(this));
+        }
         this.layers = this.generateLayer();
     }
 
