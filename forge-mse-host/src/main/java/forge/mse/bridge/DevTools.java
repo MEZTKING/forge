@@ -77,7 +77,7 @@ final class DevTools {
         "add_card", "remove_card", "move_card", "draw", "tap", "untap", "tap_all", "untap_all", "shuffle", "reorder_top",
         "peek", "set_pt", "add_keyword", "remove_keyword", "add_type", "extra_turn", "skip_to", "stop_skip", "win", "lose",
         "mana", "free_mana", "infinite_mana", "no_summoning_sickness", "hold_priority", "pause_before_ai_spell",
-        "unlimited_lands", "show_opponent_hand", "ai_mode", "ai_log", "set_rule", "export_state" };
+        "unlimited_lands", "show_opponent_hand", "ai_mode", "ai_log", "set_rule", "mse_zone", "export_state" };
     private static final String COLOURS = "WUBRGC";
     private static final String[] BOARD_ZONES = { "battlefield", "hand", "graveyard", "exile", "command", "library_top",
         "library_bottom", "sideboard" };
@@ -374,6 +374,26 @@ final class DevTools {
                 final Player to = m.has("player") ? player(g, m) : c.getOwner();
                 place(g, c, to, text(m, "zone", "hand"), m, false);
                 return c + " is moved to " + to + "'s " + text(m, "zone", "hand") + ".";
+            }
+            case "mse_zone": {
+                Card c = m.has("card") ? card(g, m) : null;
+                if (c == null) {
+                    final String name = text(m, "name", "");
+                    for (final Card x : g.getCardsIn(ZoneType.Battlefield)) {
+                        if (x.getName().equalsIgnoreCase(name)) {
+                            c = x;
+                            break;
+                        }
+                    }
+                }
+                if (c == null) {
+                    throw new IllegalArgumentException("No card called " + text(m, "name", "?") + " on the battlefield.");
+                }
+                final Card card = c;
+                final Player to = m.has("player") ? player(g, m) : card.getOwner();
+                final String zone = text(m, "zone", "bag");
+                g.getAction().moveTo(forge.game.mse.MseZones.of(to, zone), card, null, AbilityKey.newMap());
+                return card + " is in " + to + "'s " + zone + ".";
             }
             case "draw": {
                 final Player p = player(g, m);
@@ -1097,6 +1117,15 @@ final class DevTools {
                 }
                 side.add(zone == ZoneType.Library ? "library_top" : zone.name().toLowerCase(Locale.ROOT), cards);
             }
+            final JsonObject extra = new JsonObject();
+            for (final forge.game.zone.PlayerZone z : p.getNamedExtraZones()) {
+                final JsonArray names = new JsonArray();
+                for (final Card c : z.getCards()) {
+                    names.add(c.getName());
+                }
+                extra.add(z.getName(), names);
+            }
+            side.add("extra_zones", extra);
             players.add(side);
         }
         board.add("players", players);
