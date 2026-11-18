@@ -10,11 +10,18 @@ public class PlayerOutcome {
     public final String altWinSourceName;
     public final GameLossReason lossState;
     public final String loseConditionSpell;
+    private final int poisonCounters;
 
     private PlayerOutcome(String altWinSourceName, GameLossReason lossState, String loseConditionSpell) {
+        this(altWinSourceName, lossState, loseConditionSpell, 0);
+    }
+
+    private PlayerOutcome(String altWinSourceName, GameLossReason lossState, String loseConditionSpell,
+                          int poisonCounters) {
         this.altWinSourceName = altWinSourceName;
         this.loseConditionSpell = loseConditionSpell;
         this.lossState = lossState;
+        this.poisonCounters = poisonCounters;
     }
 
     /**
@@ -41,6 +48,11 @@ public class PlayerOutcome {
      */
     public static PlayerOutcome loss(GameLossReason state, String spellName) {
         return new PlayerOutcome(null, state, spellName);
+    }
+
+    /** The poison loss says how many counters they actually had (Mithridatism makes that 30 or more). */
+    public static PlayerOutcome poisonLoss(int counters) {
+        return new PlayerOutcome(null, GameLossReason.Poisoned, null, counters);
     }
 
     /**
@@ -71,7 +83,9 @@ public class PlayerOutcome {
             case Conceded: return localizer.getMessage("lblConceded");
             case Milled: return localizer.getMessage("lblLostTryingToDrawCardsFromEmptyLibrary");
             case LifeReachedZero: return localizer.getMessage("lblLostBecauseLifeTotalReachedZero");
-            case Poisoned: return localizer.getMessage("lblLostBecauseOfObtainingTenPoisonCounters");
+            case Poisoned: return localizer.getMessageorUseDefault("lblLostBecauseOfPoisonCounters",
+                    "lost because of poison counters (had %count%)")
+                    .replace("%count%", Integer.toString(poisonCounters));
             case OpponentWon: return localizer.getMessage("lblLostBecauseAnOpponentHasWonBySpell").replace("%s", loseConditionSpell);
             case SpellEffect: return localizer.getMessage("lblLostDueToEffectOfSpell").replace("%s", loseConditionSpell);
             case CommanderDamage: return localizer.getMessage("lblLostDueToAccumulationOf21DamageFromGenerals");

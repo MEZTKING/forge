@@ -2012,7 +2012,9 @@ public class Player extends GameEntity implements Comparable<Player> {
                 return false;
             }
         }
-        setOutcome(PlayerOutcome.loss(state, spellName));
+        setOutcome(state == GameLossReason.Poisoned
+                ? PlayerOutcome.poisonLoss(getPoisonCounters())
+                : PlayerOutcome.loss(state, spellName));
         return true;
     }
 
