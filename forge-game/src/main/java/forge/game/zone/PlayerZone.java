@@ -75,10 +75,21 @@ public class PlayerZone extends Zone {
     }
 
     private final Player player;
+    private final String name;
 
     public PlayerZone(final ZoneType zone, final Player inPlayer) {
+        this(zone, inPlayer, null);
+    }
+
+    /** An extra zone with a name (the Herbal bag and the like); every normal zone has a null name. */
+    public PlayerZone(final ZoneType zone, final Player inPlayer, final String name) {
         super(zone, inPlayer.getGame());
         player = inPlayer;
+        this.name = name;
+    }
+
+    public final String getName() {
+        return name;
     }
 
     @Override

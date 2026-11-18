@@ -33,6 +33,8 @@ public enum ZoneType implements ITranslatable {
     Subgame(true, "lblSubgameZone"),
     // ExtraHand is used for Backup Plan for temporary extra hands
     ExtraHand(true, "lblHandZone"),
+    // Extra is the type of our own named zones (the Herbal bag): the name is on the PlayerZone
+    Extra(true, "lblNoneZone"),
     None(true, "lblNoneZone");
 
     public static final EnumSet<ZoneType> STATIC_ABILITIES_SOURCE_ZONES = EnumSet.of(Battlefield, Graveyard, Exile, Command, Stack/*, Hand*/);

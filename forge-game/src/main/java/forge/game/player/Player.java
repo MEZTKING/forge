@@ -156,6 +156,7 @@ public class Player extends GameEntity implements Comparable<Player> {
 
     private final Map<ZoneType, PlayerZone> zones = Maps.newEnumMap(ZoneType.class);
     private List<PlayerZone> extraZones = null;
+    private final Map<String, PlayerZone> namedExtraZones = Maps.newHashMap();
 
     private final Map<Long, Integer> adjustLandPlays = Maps.newHashMap();
     private final Set<Long> adjustLandPlaysInfinite = Sets.newHashSet();
@@ -1312,6 +1313,26 @@ public class Player extends GameEntity implements Comparable<Player> {
 
     public final List<PlayerZone> getExtraZones() {
         return extraZones;
+    }
+
+    /** One of our own named zones (the Herbal bag and the like), made on first use. */
+    public final PlayerZone namedExtraZone(final String name) {
+        final String key = name.toLowerCase(Locale.ROOT);
+        PlayerZone zone = namedExtraZones.get(key);
+        if (zone == null) {
+            zone = new PlayerZone(ZoneType.Extra, this, name);
+            namedExtraZones.put(key, zone);
+            if (extraZones == null) {
+                extraZones = new ArrayList<>();
+            }
+            extraZones.add(zone);
+        }
+        return zone;
+    }
+
+    /** The named extra zones that exist (empty when none was asked for). */
+    public final Collection<PlayerZone> getNamedExtraZones() {
+        return namedExtraZones.values();
     }
 
     public void resetExtraZones(ZoneType type) {
