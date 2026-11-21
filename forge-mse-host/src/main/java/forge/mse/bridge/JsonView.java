@@ -143,6 +143,11 @@ public final class JsonView {
                 zones.addProperty("library_count", p.getZoneSize(ZoneType.Library));
             }
         }
+        final JsonObject extraZones = new JsonObject();
+        for (final var e : p.getNamedZones().entrySet()) {
+            extraZones.add(e.getKey(), cards(e.getValue()));
+        }
+        zones.add("extra_zones", extraZones);
         o.add("zones", zones);
         return o;
     }

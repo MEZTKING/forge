@@ -1330,6 +1330,7 @@ public class Player extends GameEntity implements Comparable<Player> {
                 extraZones = new ArrayList<>();
             }
             extraZones.add(zone);
+            updateZoneForView(zone);
         }
         return zone;
     }

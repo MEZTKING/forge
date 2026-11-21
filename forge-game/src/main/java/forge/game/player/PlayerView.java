@@ -32,6 +32,7 @@ import java.util.Map.Entry;
 
 public class PlayerView extends GameEntityView {
     private static final long serialVersionUID = 7005892740909549086L;
+    private final Map<String, FCollectionView<CardView>> namedZones = Maps.newHashMap();   // our own named zones
 
     public static PlayerView get(Player p) {
         return p == null ? null : p.getView();
@@ -443,6 +444,11 @@ public class PlayerView extends GameEntityView {
         }
         return FCollection.getEmpty();
     }
+
+    /** Our own named zones (the Herbal bag and the like), by name, for the table's display. */
+    public Map<String, FCollectionView<CardView>> getNamedZones() {
+        return namedZones;
+    }
     private int getZoneSize(TrackableProperty zoneProp) {
         TrackableCollection<CardView> cards = get(zoneProp);
         return cards == null ? 0 : cards.size();
@@ -471,6 +477,10 @@ public class PlayerView extends GameEntityView {
     }
 
     void updateZone(PlayerZone zone) {
+        if (zone.getName() != null) {
+            namedZones.put(zone.getName(), CardView.getCollection(zone.getCards(false)));
+            return;
+        }
         TrackableProperty prop = zone.getZoneType().getTrackableProperty();
         if (prop == null) { return; }
         set(prop, CardView.getCollection(zone.getCards(false)));
