@@ -456,6 +456,7 @@ public enum CounterEnumType implements CounterType {
     TIDE("TIDE", 0, 212, 187, CounterAiCategory.Positive),
 
     TIME("TIME", 255, 121, 255, CounterAiCategory.Positive),
+    TIMELESS("TIMELESS", 210, 180, 255, CounterAiCategory.Positive),
 
     TOWER("tower", "TOWER", 0, 239, 255, CounterAiCategory.Positive),
 
